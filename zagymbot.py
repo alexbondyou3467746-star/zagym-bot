@@ -169,21 +169,18 @@ def populate_initial_data():
     conn.close()
     logger.info("Расписание загружено")
 
-# --- Функция для еженедельного сброса мест (только по понедельникам) ---
+# --- Функция для еженедельного сброса мест ---
 def reset_weekly_spots():
     """Обнулить количество забронированных мест на все тренировки (только по понедельникам)"""
-    # Проверяем, сегодня ли понедельник (weekday() = 0)
     if datetime.now().weekday() != 0:
-        return  # Не понедельник — ничего не делаем
+        return
     
     conn = get_db_connection()
     cursor = conn.cursor()
-    
     cursor.execute('UPDATE schedule SET booked_spots = 0')
-    
     conn.commit()
     conn.close()
-    logger.info("🔄 Еженедельный сброс мест выполнен: все booked_spots обнулены")
+    logger.info("🔄 Еженедельный сброс мест выполнен")
 
 # --- Функции для работы с пользователями ---
 def save_user(user_id, username, first_name, last_name):
@@ -223,7 +220,7 @@ def subscribe_user(user_id):
     conn.commit()
     conn.close()
 
-# --- Функции для работы с расписанием и записями ---
+# --- Функции для работы с расписанием ---
 def get_workout_types():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -256,42 +253,30 @@ def get_sessions_by_type(workout_type):
     return sessions
 
 def get_user_bookings(user_id):
-    """Получить все активные записи пользователя"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT id, workout_type, day, time, booking_date 
+        SELECT id, workout_type, day, time 
         FROM bookings 
         WHERE user_id = %s AND status = 'active'
-        ORDER BY 
-            CASE day
-                WHEN 'Понедельник' THEN 1
-                WHEN 'Вторник' THEN 2
-                WHEN 'Среда' THEN 3
-                WHEN 'Четверг' THEN 4
-                WHEN 'Пятница' THEN 5
-                WHEN 'Суббота' THEN 6
-                WHEN 'Воскресенье' THEN 7
-            END,
-            time
+        ORDER BY booking_date
     ''', (user_id,))
     bookings = [(row['id'], row['workout_type'], row['day'], row['time']) for row in cursor.fetchall()]
     conn.close()
     return bookings
 
 def cancel_booking(booking_id):
-    """Отменить запись и освободить место"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute('SELECT workout_type, day, time FROM bookings WHERE id = %s AND status = "active"', (booking_id,))
+    cursor.execute('SELECT workout_type, day, time FROM bookings WHERE id = %s AND status = %s', (booking_id, 'active'))
     booking = cursor.fetchone()
     
     if not booking:
         conn.close()
-        return False, "Запись не найдена или уже отменена"
+        return False, "Запись не найдена"
     
-    cursor.execute('UPDATE bookings SET status = "cancelled" WHERE id = %s', (booking_id,))
+    cursor.execute('UPDATE bookings SET status = %s WHERE id = %s', ('cancelled', booking_id))
     cursor.execute('''
         UPDATE schedule 
         SET booked_spots = booked_spots - 1 
@@ -300,7 +285,6 @@ def cancel_booking(booking_id):
     
     conn.commit()
     conn.close()
-    
     return True, (booking['workout_type'], booking['day'], booking['time'])
 
 def get_tomorrow_schedule():
@@ -318,7 +302,6 @@ def get_tomorrow_schedule():
     ''', (tomorrow_day,))
     sessions = [(row['workout_type'], row['time'], row['description'], row['id'], row['booked_spots'], row['total_spots']) for row in cursor.fetchall()]
     conn.close()
-    
     return tomorrow_day, sessions
 
 def book_session(session_id, user_id, user_name, phone):
@@ -346,29 +329,24 @@ def book_session(session_id, user_id, user_name, phone):
     
     conn.commit()
     conn.close()
-    
     return True, (workout_type, day, time, total_spots - (booked_spots + 1))
 
-# --- Функция для ежедневной рассылки ---
+# --- Рассылка ---
 async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("🚀 Запуск ежедневной рассылки расписания")
+    logger.info("🚀 Запуск ежедневной рассылки")
     
     tomorrow_day, sessions = get_tomorrow_schedule()
-    
     if not sessions:
         logger.info("Нет тренировок на завтра")
         return
     
     message = f"🟠 Расписание на завтра! {tomorrow_day}:\n\n"
-    
     for workout_type, time, description, session_id, booked_spots, total_spots in sessions:
         formatted_time = time.replace(':', '.')
-        message += f"⏰ {formatted_time}\n"
-        message += f"• {workout_type}"
+        message += f"⏰ {formatted_time}\n• {workout_type}"
         if description:
             message += f"\n  {description}"
         message += "\n\n"
-    
     message += "Желаем успехов в фитнесе! 💪"
     
     keyboard = []
@@ -378,26 +356,18 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
         formatted_time = time.replace(':', '.')
         button_text = f"{status} {workout_type} - {formatted_time} (свободно: {available}/{total_spots})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
-    
     keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
     
     users = get_subscribed_users()
-    logger.info(f"Найдено {len(users)} подписанных пользователей")
-    
-    sent_count = 0
     for user_id in users:
         try:
-            await context.bot.send_message(chat_id=user_id, text=message, reply_markup=reply_markup)
-            sent_count += 1
+            await context.bot.send_message(chat_id=user_id, text=message, reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception as e:
-            logger.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
-            if "Forbidden" in str(e) or "blocked" in str(e):
+            logger.error(f"Не удалось отправить {user_id}: {e}")
+            if "Forbidden" in str(e):
                 unsubscribe_user(user_id)
-    
-    logger.info(f"✅ Рассылка завершена. Отправлено {sent_count} сообщений")
 
-# --- Сообщения (без изменений) ---
+# --- Текстовые сообщения ---
 WELCOME_MESSAGE = (
     "🏋️ **Добро пожаловать в фитнес центр Za Gym!** 🏋️\n\n"
     "В главном меню Вы можете:\n"
@@ -600,13 +570,60 @@ SUBSCRIBE_MESSAGE = """
 
 # --- Клавиатуры ---
 def get_main_keyboard():
-    keyboard = [
+    return ReplyKeyboardMarkup([
         ["📝 Записаться", "📅 Узнать расписание"],
         ["💰 Абонементы", "❓ Частые вопросы"],
         ["👤 Задать вопрос менеджеру", "📢 Рассылка"],
         ["❌ Мои записи / Отмена"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    ], resize_keyboard=True)
+
+def get_workout_types_keyboard():
+    types = get_workout_types()
+    emojis = {'Йога': '🧘', 'Интервальная тренировка': '⚡', 'Пилатес': '🧘', 'Здоровая спина': '💪', 'Бокс': '🥊', 'Бедра ягодицы пресс': '🍑', 'Стретчинг': '🧘', 'Стретчинг+ягодицы': '🍑', 'Бокс 8-10 дети': '👶', 'Total body': '💪'}
+    
+    keyboard = []
+    for i in range(0, len(types), 2):
+        row = [InlineKeyboardButton(f"{emojis.get(types[i], '🏋️')} {types[i]}", callback_data=f"type_{types[i]}")]
+        if i + 1 < len(types):
+            row.append(InlineKeyboardButton(f"{emojis.get(types[i+1], '🏋️')} {types[i+1]}", callback_data=f"type_{types[i+1]}"))
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_sessions_keyboard(workout_type):
+    sessions = get_sessions_by_type(workout_type)
+    keyboard = []
+    for day, time, total_spots, booked_spots, session_id in sessions:
+        available = total_spots - booked_spots
+        status = "✅" if available > 0 else "❌"
+        button_text = f"{status} {day} - {time.replace(':', '.')} (свободно: {available}/{total_spots})"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
+    keyboard.append([InlineKeyboardButton("« 🔙 К типам тренировок", callback_data="back_to_types")])
+    keyboard.append([InlineKeyboardButton("« 🔙 В главное меню", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_phone_keyboard():
+    return ReplyKeyboardMarkup([[KeyboardButton("📱 Отправить номер телефона", request_contact=True)], ["🔙 Вернуться назад"]], resize_keyboard=True, one_time_keyboard=True)
+
+def get_faq_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❓ №1. Персональный абонемент", callback_data="faq_1")],
+        [InlineKeyboardButton("❓ №2. Что такое Тотал Боди?", callback_data="faq_2")],
+        [InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")]
+    ])
+
+def get_back_to_main_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")]])
+
+def get_my_bookings_keyboard(user_id):
+    bookings = get_user_bookings(user_id)
+    if not bookings:
+        return None
+    keyboard = []
+    for booking_id, workout_type, day, time in bookings:
+        keyboard.append([InlineKeyboardButton(f"❌ {workout_type} - {day} {time.replace(':', '.')}", callback_data=f"cancel_{booking_id}")])
+    keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(keyboard)
 
 def get_subscription_keyboard(user_id):
     conn = get_db_connection()
@@ -614,89 +631,8 @@ def get_subscription_keyboard(user_id):
     cursor.execute('SELECT subscribed FROM users WHERE user_id = %s', (user_id,))
     result = cursor.fetchone()
     conn.close()
-    
     subscribed = result['subscribed'] if result else True
-    
-    keyboard = []
-    if subscribed:
-        keyboard.append([InlineKeyboardButton("🔕 Отписаться от рассылки", callback_data="unsubscribe")])
-    else:
-        keyboard.append([InlineKeyboardButton("🔔 Подписаться на рассылку", callback_data="subscribe")])
-    
-    keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_workout_types_keyboard():
-    workout_types = get_workout_types()
-    workout_emojis = {
-        'Йога': '🧘', 'Интервальная тренировка': '⚡', 'Пилатес': '🧘',
-        'Здоровая спина': '💪', 'Бокс': '🥊', 'Бедра ягодицы пресс': '🍑',
-        'Стретчинг': '🧘', 'Стретчинг+ягодицы': '🍑', 'Бокс 8-10 дети': '👶',
-        'Total body': '💪'
-    }
-    
-    keyboard = []
-    for i in range(0, len(workout_types), 2):
-        row = []
-        wt1 = workout_types[i]
-        emoji1 = workout_emojis.get(wt1, '🏋️')
-        row.append(InlineKeyboardButton(f"{emoji1} {wt1}", callback_data=f"type_{wt1}"))
-        
-        if i + 1 < len(workout_types):
-            wt2 = workout_types[i + 1]
-            emoji2 = workout_emojis.get(wt2, '🏋️')
-            row.append(InlineKeyboardButton(f"{emoji2} {wt2}", callback_data=f"type_{wt2}"))
-        keyboard.append(row)
-    
-    keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_sessions_keyboard(workout_type):
-    sessions = get_sessions_by_type(workout_type)
-    keyboard = []
-    
-    for day, time, total_spots, booked_spots, session_id in sessions:
-        available = total_spots - booked_spots
-        status = "✅" if available > 0 else "❌"
-        formatted_time = time.replace(':', '.')
-        button_text = f"{status} {day} - {formatted_time} (свободно: {available}/{total_spots})"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
-    
-    keyboard.append([InlineKeyboardButton("« 🔙 К типам тренировок", callback_data="back_to_types")])
-    keyboard.append([InlineKeyboardButton("« 🔙 В главное меню", callback_data="back_to_main")])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_phone_keyboard():
-    keyboard = [
-        [KeyboardButton("📱 Отправить номер телефона", request_contact=True)],
-        [KeyboardButton("🔙 Вернуться назад")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-
-def get_faq_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("❓ №1. Персональный абонемент", callback_data="faq_1")],
-        [InlineKeyboardButton("❓ №2. Что такое Тотал Боди?", callback_data="faq_2")],
-        [InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_back_to_main_keyboard():
-    keyboard = [[InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")]]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_my_bookings_keyboard(user_id):
-    bookings = get_user_bookings(user_id)
-    
-    if not bookings:
-        return None
-    
-    keyboard = []
-    for booking_id, workout_type, day, time in bookings:
-        formatted_time = time.replace(':', '.')
-        button_text = f"❌ {workout_type} - {day} {formatted_time}"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"cancel_{booking_id}")])
-    
+    keyboard = [[InlineKeyboardButton("🔕 Отписаться от рассылки" if subscribed else "🔔 Подписаться на рассылку", callback_data="unsubscribe" if subscribed else "subscribe")]]
     keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -704,11 +640,7 @@ def get_my_bookings_keyboard(user_id):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     save_user(user.id, user.username, user.first_name, user.last_name)
-    
-    await update.message.reply_text(
-        WELCOME_MESSAGE,
-        reply_markup=get_main_keyboard()
-    )
+    await update.message.reply_text(WELCOME_MESSAGE, reply_markup=get_main_keyboard())
     return ConversationHandler.END
 
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -716,69 +648,32 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     
     if text == "📝 Записаться":
-        await update.message.reply_text(
-            "Выберите тип тренировки:",
-            reply_markup=get_workout_types_keyboard()
-        )
+        await update.message.reply_text("Выберите тип тренировки:", reply_markup=get_workout_types_keyboard())
         return SELECTING_CLASS
-        
     elif text == "📅 Узнать расписание":
-        await update.message.reply_text(
-            SCHEDULE_MESSAGE,
-            reply_markup=get_back_to_main_keyboard()
-        )
+        await update.message.reply_text(SCHEDULE_MESSAGE, reply_markup=get_back_to_main_keyboard())
         return ConversationHandler.END
-        
     elif text == "💰 Абонементы":
-        await update.message.reply_text(
-            MEMBERSHIP_MESSAGE,
-            reply_markup=get_back_to_main_keyboard()
-        )
+        await update.message.reply_text(MEMBERSHIP_MESSAGE, reply_markup=get_back_to_main_keyboard())
         return ConversationHandler.END
-        
     elif text == "❓ Частые вопросы":
-        await update.message.reply_text(
-            FAQ_MESSAGE,
-            reply_markup=get_faq_keyboard()
-        )
+        await update.message.reply_text(FAQ_MESSAGE, reply_markup=get_faq_keyboard())
         return ConversationHandler.END
-        
     elif text == "👤 Задать вопрос менеджеру":
-        await update.message.reply_text(
-            "👤 Свяжитесь с нашим менеджером — @ZaGymclub и мы ответим вам в ближайшее время!",
-            reply_markup=get_back_to_main_keyboard()
-        )
+        await update.message.reply_text("👤 Свяжитесь с нашим менеджером — @ZaGymclub и мы ответим вам в ближайшее время!", reply_markup=get_back_to_main_keyboard())
         return ConversationHandler.END
-        
     elif text == "📢 Рассылка":
-        await update.message.reply_text(
-            SUBSCRIBE_MESSAGE,
-            reply_markup=get_subscription_keyboard(user_id)
-        )
+        await update.message.reply_text(SUBSCRIBE_MESSAGE, reply_markup=get_subscription_keyboard(user_id))
         return ConversationHandler.END
-    
     elif text == "❌ Мои записи / Отмена":
         bookings = get_user_bookings(user_id)
-        
         if not bookings:
-            await update.message.reply_text(
-                "❌ У вас нет активных записей.\n\nЧтобы записаться, нажмите «📝 Записаться»",
-                reply_markup=get_main_keyboard()
-            )
+            await update.message.reply_text("❌ У вас нет активных записей.\n\nЧтобы записаться, нажмите «📝 Записаться»", reply_markup=get_main_keyboard())
             return ConversationHandler.END
-        
-        keyboard = get_my_bookings_keyboard(user_id)
-        await update.message.reply_text(
-            "📋 Ваши активные записи:\n\nВыберите запись, которую хотите отменить:",
-            reply_markup=keyboard
-        )
+        await update.message.reply_text("📋 Ваши активные записи:\n\nВыберите запись, которую хотите отменить:", reply_markup=get_my_bookings_keyboard(user_id))
         return SELECTING_BOOKING_TO_CANCEL
-        
     else:
-        await update.message.reply_text(
-            "Пожалуйста, воспользуйтесь кнопками меню.",
-            reply_markup=get_main_keyboard()
-        )
+        await update.message.reply_text("Пожалуйста, воспользуйтесь кнопками меню.", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
 async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -788,124 +683,69 @@ async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TY
     
     if query.data == "subscribe":
         subscribe_user(user_id)
-        await query.edit_message_text(
-            "✅ Вы подписались на рассылку!",
-            reply_markup=get_back_to_main_keyboard()
-        )
+        await query.edit_message_text("✅ Вы подписались на рассылку!", reply_markup=get_back_to_main_keyboard())
         return ConversationHandler.END
-        
     elif query.data == "unsubscribe":
         unsubscribe_user(user_id)
-        await query.edit_message_text(
-            "🔕 Вы отписались от рассылки.",
-            reply_markup=get_back_to_main_keyboard()
-        )
+        await query.edit_message_text("🔕 Вы отписались от рассылки.", reply_markup=get_back_to_main_keyboard())
         return ConversationHandler.END
-    
     elif query.data.startswith("cancel_"):
         booking_id = int(query.data[7:])
         success, result = cancel_booking(booking_id)
-        
         if success:
             workout_type, day, time = result
-            formatted_time = time.replace(':', '.')
-            await query.edit_message_text(
-                f"✅ Запись успешно отменена!\n\n"
-                f"🏋️ {workout_type}\n📅 {day}\n⏰ {formatted_time}\n\n"
-                f"Место освобождено. Если хотите, можете записаться снова.",
-                reply_markup=get_back_to_main_keyboard()
-            )
+            await query.edit_message_text(f"✅ Запись успешно отменена!\n\n🏋️ {workout_type}\n📅 {day}\n⏰ {time.replace(':', '.')}\n\nМесто освобождено.", reply_markup=get_back_to_main_keyboard())
         else:
-            await query.edit_message_text(
-                f"❌ {result}",
-                reply_markup=get_back_to_main_keyboard()
-            )
+            await query.edit_message_text(f"❌ {result}", reply_markup=get_back_to_main_keyboard())
         return ConversationHandler.END
-    
     elif query.data.startswith("type_"):
         workout_type = query.data[5:]
         context.user_data['selected_workout_type'] = workout_type
         sessions = get_sessions_by_type(workout_type)
-        
         if not sessions:
-            await query.edit_message_text(
-                f"Для '{workout_type}' нет доступных сессий.",
-                reply_markup=get_back_to_main_keyboard()
-            )
+            await query.edit_message_text(f"Для '{workout_type}' нет доступных сессий.", reply_markup=get_back_to_main_keyboard())
             return SELECTING_CLASS
-        
-        await query.edit_message_text(
-            f"Выберите дату для {workout_type}:",
-            reply_markup=get_sessions_keyboard(workout_type)
-        )
+        await query.edit_message_text(f"Выберите дату для {workout_type}:", reply_markup=get_sessions_keyboard(workout_type))
         return SELECTING_DATE
-    
     elif query.data.startswith("session_"):
         session_id = int(query.data[8:])
         context.user_data['selected_session_id'] = session_id
-        
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT workout_type, day, time FROM schedule WHERE id = %s', (session_id,))
         row = cursor.fetchone()
         conn.close()
-        
-        workout_type, day, time = row['workout_type'], row['day'], row['time']
-        formatted_time = time.replace(':', '.')
-        
-        await query.edit_message_text(
-            f"Вы выбрали:\n🏋️ {workout_type}\n📅 {day}\n⏰ {formatted_time}\n\nВведите ваше имя:",
-            reply_markup=get_back_to_main_keyboard()
-        )
+        await query.edit_message_text(f"Вы выбрали:\n🏋️ {row['workout_type']}\n📅 {row['day']}\n⏰ {row['time'].replace(':', '.')}\n\nВведите ваше имя:", reply_markup=get_back_to_main_keyboard())
         return ENTERING_NAME
-    
     elif query.data == "faq_1":
         await query.edit_message_text(FAQ_ANSWER_1)
         await query.message.reply_text("Вернуться к вопросам?", reply_markup=get_faq_keyboard())
         return ConversationHandler.END
-        
     elif query.data == "faq_2":
         await query.edit_message_text(FAQ_ANSWER_2)
         await query.message.reply_text("Вернуться к вопросам?", reply_markup=get_faq_keyboard())
         return ConversationHandler.END
-    
     elif query.data == "back_to_types":
-        await query.edit_message_text(
-            "Выберите тип тренировки:",
-            reply_markup=get_workout_types_keyboard()
-        )
+        await query.edit_message_text("Выберите тип тренировки:", reply_markup=get_workout_types_keyboard())
         return SELECTING_CLASS
-        
     elif query.data == "back_to_main":
         await query.edit_message_text(WELCOME_MESSAGE)
         await query.message.reply_text("Выберите действие:", reply_markup=get_main_keyboard())
         return ConversationHandler.END
 
 async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_name = update.message.text.strip()
-    
-    if len(user_name) < 2 or len(user_name) > 50:
-        await update.message.reply_text(
-            "Введите корректное имя (2-50 символов):",
-            reply_markup=get_back_to_main_keyboard()
-        )
+    name = update.message.text.strip()
+    if len(name) < 2 or len(name) > 50:
+        await update.message.reply_text("Введите корректное имя (2-50 символов):", reply_markup=get_back_to_main_keyboard())
         return ENTERING_NAME
-    
-    context.user_data['user_name'] = user_name
-    
-    await update.message.reply_text(
-        f"Спасибо, {user_name}! Теперь отправьте номер телефона:",
-        reply_markup=get_phone_keyboard()
-    )
+    context.user_data['user_name'] = name
+    await update.message.reply_text(f"Спасибо, {name}! Теперь отправьте номер телефона:", reply_markup=get_phone_keyboard())
     return REQUESTING_PHONE
 
 async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "🔙 Вернуться назад":
         context.user_data.clear()
-        await update.message.reply_text(
-            "Возвращаемся к выбору тренировки:",
-            reply_markup=get_workout_types_keyboard()
-        )
+        await update.message.reply_text("Возвращаемся к выбору тренировки:", reply_markup=get_workout_types_keyboard())
         return SELECTING_CLASS
     
     if update.message.contact:
@@ -913,10 +753,7 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         phone = update.message.text.strip()
         if not phone.replace('+', '').replace('-', '').replace(' ', '').isdigit():
-            await update.message.reply_text(
-                "Введите корректный номер телефона:",
-                reply_markup=get_phone_keyboard()
-            )
+            await update.message.reply_text("Введите корректный номер телефона:", reply_markup=get_phone_keyboard())
             return REQUESTING_PHONE
     
     user_id = update.effective_user.id
@@ -924,33 +761,17 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session_id = context.user_data.get('selected_session_id')
     
     if not session_id:
-        await update.message.reply_text(
-            "Ошибка. Начните запись заново.",
-            reply_markup=get_main_keyboard()
-        )
+        await update.message.reply_text("Ошибка. Начните запись заново.", reply_markup=get_main_keyboard())
+        context.user_data.clear()
         return ConversationHandler.END
     
     success, result = book_session(session_id, user_id, user_name, phone)
     
     if success:
         workout_type, day, time, remaining = result
-        formatted_time = time.replace(':', '.')
-        
-        await update.message.reply_text(
-            f"✅ **Вы записаны!**\n\n"
-            f"🏋️ {workout_type}\n📅 {day}\n⏰ {formatted_time}\n"
-            f"📊 Осталось мест: {remaining}\n\nЖдем вас! 💪",
-            reply_markup=get_main_keyboard(),
-            parse_mode='Markdown'
-        )
-        
+        await update.message.reply_text(f"✅ **Вы записаны!**\n\n🏋️ {workout_type}\n📅 {day}\n⏰ {time.replace(':', '.')}\n📊 Осталось мест: {remaining}\n\nЖдем вас! 💪", reply_markup=get_main_keyboard(), parse_mode='Markdown')
         try:
-            channel_message = (
-                "📢 **НОВАЯ ЗАПИСЬ** 📢\n\n"
-                f"👤 {user_name}\n📞 {phone}\n"
-                f"🏋️ {workout_type}\n📆 {day}\n⏱️ {formatted_time}"
-            )
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=channel_message, parse_mode='Markdown')
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=f"📢 **НОВАЯ ЗАПИСЬ** 📢\n\n👤 {user_name}\n📞 {phone}\n🏋️ {workout_type}\n📆 {day}\n⏱️ {time.replace(':', '.')}", parse_mode='Markdown')
         except Exception as e:
             logger.error(f"Ошибка отправки в канал: {e}")
     else:
@@ -972,9 +793,9 @@ def main():
     except Exception as e:
         logger.error(f"Ошибка инициализации БД: {e}")
     
-    application = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
     
-    booking_conv = ConversationHandler(
+    conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('^(📝 Записаться)$'), handle_reply_buttons)],
         states={
             SELECTING_CLASS: [CallbackQueryHandler(handle_inline_buttons, pattern='^type_|^back_to_')],
@@ -986,26 +807,20 @@ def main():
         per_message=False
     )
     
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(booking_conv)
-    application.add_handler(CallbackQueryHandler(handle_inline_buttons))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(handle_inline_buttons))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons))
     
-    job_queue = application.job_queue
-    if job_queue:
+    jq = app.job_queue
+    if jq:
         tz = pytz.timezone('Europe/Minsk')
-        
-        # Ежедневная рассылка в 15:00
-        job_queue.run_daily(send_daily_schedule, time=time(hour=15, minute=0, tzinfo=tz))
-        logger.info("📅 Ежедневная рассылка настроена на 15:00")
-        
-        # Еженедельный сброс мест — запускаем каждую ночь в 00:00
-        # Внутри функции reset_weekly_spots проверяется, понедельник ли сегодня
-        job_queue.run_daily(reset_weekly_spots, time=time(hour=0, minute=0, tzinfo=tz))
-        logger.info("🔄 Еженедельный сброс мест настроен на 00:00")
+        jq.run_daily(send_daily_schedule, time=time(hour=15, minute=0, tzinfo=tz))
+        jq.run_daily(reset_weekly_spots, time=time(hour=0, minute=0, tzinfo=tz))
+        logger.info("📅 Рассылка настроена на 15:00, сброс мест — на 00:00")
     
-    logger.info("🚀 Бот запущен...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("🚀 Бот запущен")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
