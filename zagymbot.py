@@ -40,6 +40,25 @@ def get_db_connection():
     
     return psycopg2.connect(database_url, cursor_factory=RealDictCursor)
 
+# --- Миграция базы данных (добавление колонки status) ---
+def migrate_database():
+    """Добавить колонку status в таблицу bookings, если её нет"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("ALTER TABLE bookings ADD COLUMN status TEXT DEFAULT 'active'")
+        conn.commit()
+        logger.info("✅ Колонка status добавлена в таблицу bookings")
+    except Exception as e:
+        # Колонка уже существует — игнорируем
+        if 'duplicate column' in str(e).lower() or 'already exists' in str(e).lower():
+            logger.info("Колонка status уже существует")
+        else:
+            logger.warning(f"Ошибка при добавлении колонки status: {e}")
+    
+    conn.close()
+
 # --- Инициализация базы данных ---
 def init_database():
     conn = get_db_connection()
@@ -85,8 +104,7 @@ def init_database():
             workout_type TEXT NOT NULL,
             day TEXT NOT NULL,
             time TEXT NOT NULL,
-            booking_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'active'
+            booking_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
@@ -105,13 +123,16 @@ def populate_initial_data():
         'Бокс 8-10 дети', 'Total body'
     ]
     
-    cursor.execute('DELETE FROM workout_types')
+    # Проверяем, есть ли уже данные
+    cursor.execute('SELECT COUNT(*) FROM workout_types')
+    count = cursor.fetchone()['count']
     
-    for wt in workout_types:
-        try:
-            cursor.execute('INSERT INTO workout_types (name) VALUES (%s) ON CONFLICT (name) DO NOTHING', (wt,))
-        except Exception as e:
-            logger.error(f"Ошибка при добавлении типа {wt}: {e}")
+    if count == 0:
+        for wt in workout_types:
+            try:
+                cursor.execute('INSERT INTO workout_types (name) VALUES (%s) ON CONFLICT (name) DO NOTHING', (wt,))
+            except Exception as e:
+                logger.error(f"Ошибка при добавлении типа {wt}: {e}")
     
     schedule_data = [
         ('Интервальная тренировка', 'Понедельник', '9:30-10:30', 'сила + кардио'),
@@ -157,13 +178,15 @@ def populate_initial_data():
         ('Пилатес', 'Воскресенье', '14:00-15:00', 'осанка и мягкое укрепление'),
     ]
     
-    cursor.execute('DELETE FROM schedule')
+    cursor.execute('SELECT COUNT(*) FROM schedule')
+    count = cursor.fetchone()['count']
     
-    for workout_type, day, time, description in schedule_data:
-        cursor.execute('''
-            INSERT INTO schedule (workout_type, day, time, description, total_spots, booked_spots)
-            VALUES (%s, %s, %s, %s, 12, 0)
-        ''', (workout_type, day, time, description))
+    if count == 0:
+        for workout_type, day, time, description in schedule_data:
+            cursor.execute('''
+                INSERT INTO schedule (workout_type, day, time, description, total_spots, booked_spots)
+                VALUES (%s, %s, %s, %s, 12, 0)
+            ''', (workout_type, day, time, description))
     
     conn.commit()
     conn.close()
@@ -255,13 +278,26 @@ def get_sessions_by_type(workout_type):
 def get_user_bookings(user_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT id, workout_type, day, time 
-        FROM bookings 
-        WHERE user_id = %s AND status = 'active'
-        ORDER BY booking_date
-    ''', (user_id,))
-    bookings = [(row['id'], row['workout_type'], row['day'], row['time']) for row in cursor.fetchall()]
+    
+    # Проверяем, есть ли колонка status
+    try:
+        cursor.execute('''
+            SELECT id, workout_type, day, time 
+            FROM bookings 
+            WHERE user_id = %s AND status = 'active'
+            ORDER BY booking_date
+        ''', (user_id,))
+        bookings = [(row['id'], row['workout_type'], row['day'], row['time']) for row in cursor.fetchall()]
+    except:
+        # Если колонки status нет, получаем все записи
+        cursor.execute('''
+            SELECT id, workout_type, day, time 
+            FROM bookings 
+            WHERE user_id = %s
+            ORDER BY booking_date
+        ''', (user_id,))
+        bookings = [(row['id'], row['workout_type'], row['day'], row['time']) for row in cursor.fetchall()]
+    
     conn.close()
     return bookings
 
@@ -269,19 +305,35 @@ def cancel_booking(booking_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    cursor.execute('SELECT workout_type, day, time FROM bookings WHERE id = %s AND status = %s', (booking_id, 'active'))
-    booking = cursor.fetchone()
-    
-    if not booking:
-        conn.close()
-        return False, "Запись не найдена"
-    
-    cursor.execute('UPDATE bookings SET status = %s WHERE id = %s', ('cancelled', booking_id))
-    cursor.execute('''
-        UPDATE schedule 
-        SET booked_spots = booked_spots - 1 
-        WHERE workout_type = %s AND day = %s AND time = %s
-    ''', (booking['workout_type'], booking['day'], booking['time']))
+    try:
+        cursor.execute('SELECT workout_type, day, time FROM bookings WHERE id = %s AND status = %s', (booking_id, 'active'))
+        booking = cursor.fetchone()
+        
+        if not booking:
+            conn.close()
+            return False, "Запись не найдена"
+        
+        cursor.execute('UPDATE bookings SET status = %s WHERE id = %s', ('cancelled', booking_id))
+        cursor.execute('''
+            UPDATE schedule 
+            SET booked_spots = booked_spots - 1 
+            WHERE workout_type = %s AND day = %s AND time = %s
+        ''', (booking['workout_type'], booking['day'], booking['time']))
+    except:
+        # Если колонки status нет, просто удаляем запись
+        cursor.execute('SELECT workout_type, day, time FROM bookings WHERE id = %s', (booking_id,))
+        booking = cursor.fetchone()
+        
+        if not booking:
+            conn.close()
+            return False, "Запись не найдена"
+        
+        cursor.execute('DELETE FROM bookings WHERE id = %s', (booking_id,))
+        cursor.execute('''
+            UPDATE schedule 
+            SET booked_spots = booked_spots - 1 
+            WHERE workout_type = %s AND day = %s AND time = %s
+        ''', (booking['workout_type'], booking['day'], booking['time']))
     
     conn.commit()
     conn.close()
@@ -322,10 +374,19 @@ def book_session(session_id, user_id, user_name, phone):
         return False, "Нет свободных мест"
     
     cursor.execute('UPDATE schedule SET booked_spots = booked_spots + 1 WHERE id = %s', (session_id,))
-    cursor.execute('''
-        INSERT INTO bookings (user_id, user_name, phone, workout_type, day, time, status)
-        VALUES (%s, %s, %s, %s, %s, %s, 'active')
-    ''', (user_id, user_name, phone, workout_type, day, time))
+    
+    # Пытаемся вставить с status, если колонка есть
+    try:
+        cursor.execute('''
+            INSERT INTO bookings (user_id, user_name, phone, workout_type, day, time, status)
+            VALUES (%s, %s, %s, %s, %s, %s, 'active')
+        ''', (user_id, user_name, phone, workout_type, day, time))
+    except:
+        # Если колонки status нет, вставляем без неё
+        cursor.execute('''
+            INSERT INTO bookings (user_id, user_name, phone, workout_type, day, time)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        ''', (user_id, user_name, phone, workout_type, day, time))
     
     conn.commit()
     conn.close()
@@ -743,6 +804,8 @@ async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return REQUESTING_PHONE
 
 async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"🔍 handle_phone вызван! Текст: {update.message.text}")
+    
     if update.message.text == "🔙 Вернуться назад":
         context.user_data.clear()
         await update.message.reply_text("Возвращаемся к выбору тренировки:", reply_markup=get_workout_types_keyboard())
@@ -760,6 +823,8 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = context.user_data.get('user_name', 'Не указано')
     session_id = context.user_data.get('selected_session_id')
     
+    logger.info(f"user_id={user_id}, user_name={user_name}, session_id={session_id}, phone={phone}")
+    
     if not session_id:
         await update.message.reply_text("Ошибка. Начните запись заново.", reply_markup=get_main_keyboard())
         context.user_data.clear()
@@ -767,11 +832,21 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     success, result = book_session(session_id, user_id, user_name, phone)
     
+    logger.info(f"Результат записи: success={success}, result={result}")
+    
     if success:
         workout_type, day, time, remaining = result
-        await update.message.reply_text(f"✅ **Вы записаны!**\n\n🏋️ {workout_type}\n📅 {day}\n⏰ {time.replace(':', '.')}\n📊 Осталось мест: {remaining}\n\nЖдем вас! 💪", reply_markup=get_main_keyboard(), parse_mode='Markdown')
+        await update.message.reply_text(
+            f"✅ **Вы записаны!**\n\n🏋️ {workout_type}\n📅 {day}\n⏰ {time.replace(':', '.')}\n📊 Осталось мест: {remaining}\n\nЖдем вас! 💪",
+            reply_markup=get_main_keyboard(),
+            parse_mode='Markdown'
+        )
         try:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=f"📢 **НОВАЯ ЗАПИСЬ** 📢\n\n👤 {user_name}\n📞 {phone}\n🏋️ {workout_type}\n📆 {day}\n⏱️ {time.replace(':', '.')}", parse_mode='Markdown')
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=f"📢 **НОВАЯ ЗАПИСЬ** 📢\n\n👤 {user_name}\n📞 {phone}\n🏋️ {workout_type}\n📆 {day}\n⏱️ {time.replace(':', '.')}",
+                parse_mode='Markdown'
+            )
         except Exception as e:
             logger.error(f"Ошибка отправки в канал: {e}")
     else:
@@ -789,6 +864,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     try:
         init_database()
+        migrate_database()  # Добавляем колонку status, если её нет
         populate_initial_data()
     except Exception as e:
         logger.error(f"Ошибка инициализации БД: {e}")
