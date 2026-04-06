@@ -169,9 +169,13 @@ def populate_initial_data():
     conn.close()
     logger.info("Расписание загружено")
 
-# --- НОВАЯ ФУНКЦИЯ ДЛЯ ЕЖЕНЕДЕЛЬНОГО СБРОСА МЕСТ ---
+# --- Функция для еженедельного сброса мест (только по понедельникам) ---
 def reset_weekly_spots():
-    """Обнулить количество забронированных мест на все тренировки (каждую неделю)"""
+    """Обнулить количество забронированных мест на все тренировки (только по понедельникам)"""
+    # Проверяем, сегодня ли понедельник (weekday() = 0)
+    if datetime.now().weekday() != 0:
+        return  # Не понедельник — ничего не делаем
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -393,7 +397,7 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"✅ Рассылка завершена. Отправлено {sent_count} сообщений")
 
-# --- Сообщения (без изменений, оставляем как было) ---
+# --- Сообщения (без изменений) ---
 WELCOME_MESSAGE = (
     "🏋️ **Добро пожаловать в фитнес центр Za Gym!** 🏋️\n\n"
     "В главном меню Вы можете:\n"
@@ -594,7 +598,7 @@ SUBSCRIBE_MESSAGE = """
 Каждый день в 15:00 мы присылаем расписание тренировок на завтра.
 """
 
-# --- Клавиатуры (без изменений) ---
+# --- Клавиатуры ---
 def get_main_keyboard():
     keyboard = [
         ["📝 Записаться", "📅 Узнать расписание"],
@@ -696,7 +700,7 @@ def get_my_bookings_keyboard(user_id):
     keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- Обработчики (без изменений) ---
+# --- Обработчики ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     save_user(user.id, user.username, user.first_name, user.last_name)
@@ -995,9 +999,10 @@ def main():
         job_queue.run_daily(send_daily_schedule, time=time(hour=15, minute=0, tzinfo=tz))
         logger.info("📅 Ежедневная рассылка настроена на 15:00")
         
-        # 🆕 Еженедельный сброс мест (каждый понедельник в 00:00)
-        job_queue.run_daily(reset_weekly_spots, time=time(hour=0, minute=0, tzinfo=tz), days_of_week=(0,))
-        logger.info("🔄 Еженедельный сброс мест настроен на понедельник 00:00")
+        # Еженедельный сброс мест — запускаем каждую ночь в 00:00
+        # Внутри функции reset_weekly_spots проверяется, понедельник ли сегодня
+        job_queue.run_daily(reset_weekly_spots, time=time(hour=0, minute=0, tzinfo=tz))
+        logger.info("🔄 Еженедельный сброс мест настроен на 00:00")
     
     logger.info("🚀 Бот запущен...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
