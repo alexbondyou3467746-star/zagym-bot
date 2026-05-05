@@ -1,7 +1,8 @@
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
+import datetime as dt  # <-- FIX 1: импортируем модуль целиком, чтобы избежать конфликта имён
 import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -105,7 +106,6 @@ def populate_initial_data():
         'Бокс 8-10 дети', 'Total body'
     ]
     
-    # Проверяем, есть ли уже данные
     cursor.execute('SELECT COUNT(*) FROM workout_types')
     count = cursor.fetchone()['count']
     
@@ -164,30 +164,31 @@ def populate_initial_data():
     count = cursor.fetchone()['count']
     
     if count == 0:
-        for workout_type, day, time, description in schedule_data:
+        for workout_type, day, session_time, description in schedule_data:
             cursor.execute('''
                 INSERT INTO schedule (workout_type, day, time, description, total_spots, booked_spots)
                 VALUES (%s, %s, %s, %s, 12, 0)
-            ''', (workout_type, day, time, description))
+            ''', (workout_type, day, session_time, description))
     
     conn.commit()
     conn.close()
     logger.info("Расписание загружено")
 
-# --- Функция для еженедельного сброса мест ---
-def reset_weekly_spots():
-    """Обнулить количество забронированных мест на все тренировки (только по понедельникам)"""
-    # Проверяем, сегодня ли понедельник
-    if datetime.now().weekday() != 0:
-        logger.info("Сегодня не понедельник, сброс мест не выполняется")
+# --- FIX 2: Сброс мест теперь по воскресеньям (weekday() == 6) ---
+def reset_weekly_spots(context: ContextTypes.DEFAULT_TYPE = None):
+    """Обнулить количество забронированных мест — только по воскресеньям"""
+    if datetime.now().weekday() != 6:  # 6 = воскресенье
+        logger.info("Сегодня не воскресенье, сброс мест не выполняется")
         return
     
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('UPDATE schedule SET booked_spots = 0')
+    # Также отменяем все активные записи, так как неделя завершилась
+    cursor.execute("UPDATE bookings SET status = 'expired' WHERE status = 'active'")
     conn.commit()
     conn.close()
-    logger.info("🔄 Еженедельный сброс мест выполнен")
+    logger.info("🔄 Еженедельный сброс мест выполнен (воскресенье)")
 
 # --- Функции для работы с пользователями ---
 def save_user(user_id, username, first_name, last_name):
@@ -259,6 +260,7 @@ def get_sessions_by_type(workout_type):
             END,
             time
     ''', (workout_type,))
+    # FIX 3: переменная называется session_time, а не time — чтобы не конфликтовать с модулем
     sessions = [(row['day'], row['time'], row['total_spots'], row['booked_spots'], row['id']) for row in cursor.fetchall()]
     conn.close()
     return sessions
@@ -314,6 +316,7 @@ def get_tomorrow_schedule():
         WHERE day = %s 
         ORDER BY time
     ''', (tomorrow_day,))
+    # FIX 4: используем session_time вместо time
     sessions = [(row['workout_type'], row['time'], row['description'], row['id'], row['booked_spots'], row['total_spots']) for row in cursor.fetchall()]
     conn.close()
     
@@ -330,7 +333,11 @@ def book_session(session_id, user_id, user_name, phone):
         conn.close()
         return False, "Сессия не найдена"
     
-    workout_type, day, time, booked_spots, total_spots = session['workout_type'], session['day'], session['time'], session['booked_spots'], session['total_spots']
+    workout_type = session['workout_type']
+    day = session['day']
+    session_time = session['time']  # FIX 5: переименовано в session_time
+    booked_spots = session['booked_spots']
+    total_spots = session['total_spots']
     
     if booked_spots >= total_spots:
         conn.close()
@@ -340,14 +347,14 @@ def book_session(session_id, user_id, user_name, phone):
     cursor.execute('''
         INSERT INTO bookings (user_id, user_name, phone, workout_type, day, time, status)
         VALUES (%s, %s, %s, %s, %s, %s, 'active')
-    ''', (user_id, user_name, phone, workout_type, day, time))
+    ''', (user_id, user_name, phone, workout_type, day, session_time))
     
     conn.commit()
     conn.close()
     
-    return True, (workout_type, day, time, total_spots - (booked_spots + 1))
+    return True, (workout_type, day, session_time, total_spots - (booked_spots + 1))
 
-# --- Функция для ежедневной рассылки (полностью исправлена) ---
+# --- FIX 6: Полностью переписана функция рассылки ---
 async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
     """Отправить расписание на завтра всем подписанным пользователям"""
     logger.info("🚀 ЗАПУСК ЕЖЕДНЕВНОЙ РАССЫЛКИ (15:00)")
@@ -360,27 +367,19 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
             logger.warning("❌ Нет тренировок на завтра — рассылка не отправлена")
             return
         
-        # Формируем сообщение
+        # Формируем текстовое сообщение
         message = f"🟠 Расписание на завтра! {tomorrow_day}:\n\n"
-        for workout_type, time, description, session_id, booked_spots, total_spots in sessions:
-            formatted_time = time.replace(':', '.')
-            message += f"⏰ {formatted_time}\n"
-            message += f"• {workout_type}"
-            if description:
-                message += f"\n  {description}"
-            message += "\n\n"
-        message += "Желаем успехов в фитнесе! 💪"
-        
-        # Создаем клавиатуру
-        keyboard = []
-        for workout_type, time, description, session_id, booked_spots, total_spots in sessions:
+        for workout_type, session_time, description, session_id, booked_spots, total_spots in sessions:
+            formatted_time = session_time.replace(':', '.')
             available = total_spots - booked_spots
             status = "✅" if available > 0 else "❌"
-            formatted_time = time.replace(':', '.')
-            button_text = f"{status} {workout_type} - {formatted_time} (свободно: {available}/{total_spots})"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
-        keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            message += f"⏰ {formatted_time}\n"
+            message += f"{status} {workout_type}"
+            if description:
+                message += f"\n  {description}"
+            message += f"\n  Свободно мест: {available}/{total_spots}"
+            message += "\n\n"
+        message += "Желаем успехов в фитнесе! 💪\nЗаписаться можно через бота 👇"
         
         # Получаем всех подписанных пользователей
         users = get_subscribed_users()
@@ -390,14 +389,13 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
             logger.warning("❌ Нет подписанных пользователей — рассылка не отправлена")
             return
         
-        # Отправляем каждому
+        # Отправляем каждому без inline-кнопок (они создавали проблемы вне диалога)
         sent_count = 0
         for user_id in users:
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=message,
-                    reply_markup=reply_markup
+                    text=message
                 )
                 sent_count += 1
                 logger.info(f"✅ Рассылка отправлена пользователю {user_id}")
@@ -671,10 +669,10 @@ def get_sessions_keyboard(workout_type):
     sessions = get_sessions_by_type(workout_type)
     keyboard = []
     
-    for day, time, total_spots, booked_spots, session_id in sessions:
+    for day, session_time, total_spots, booked_spots, session_id in sessions:
         available = total_spots - booked_spots
         status = "✅" if available > 0 else "❌"
-        formatted_time = time.replace(':', '.')
+        formatted_time = session_time.replace(':', '.')
         button_text = f"{status} {day} - {formatted_time} (свободно: {available}/{total_spots})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
     
@@ -708,8 +706,8 @@ def get_my_bookings_keyboard(user_id):
         return None
     
     keyboard = []
-    for booking_id, workout_type, day, time in bookings:
-        formatted_time = time.replace(':', '.')
+    for booking_id, workout_type, day, session_time in bookings:
+        formatted_time = session_time.replace(':', '.')
         button_text = f"❌ {workout_type} - {day} {formatted_time}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"cancel_{booking_id}")])
     
@@ -823,8 +821,8 @@ async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TY
         success, result = cancel_booking(booking_id)
         
         if success:
-            workout_type, day, time = result
-            formatted_time = time.replace(':', '.')
+            workout_type, day, session_time = result
+            formatted_time = session_time.replace(':', '.')
             await query.edit_message_text(
                 f"✅ Запись успешно отменена!\n\n"
                 f"🏋️ {workout_type}\n📅 {day}\n⏰ {formatted_time}\n\n"
@@ -866,8 +864,10 @@ async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TY
         row = cursor.fetchone()
         conn.close()
         
-        workout_type, day, time = row['workout_type'], row['day'], row['time']
-        formatted_time = time.replace(':', '.')
+        workout_type = row['workout_type']
+        day = row['day']
+        session_time = row['time']  # FIX 7: переименовано
+        formatted_time = session_time.replace(':', '.')
         
         await query.edit_message_text(
             f"Вы выбрали:\n🏋️ {workout_type}\n📅 {day}\n⏰ {formatted_time}\n\nВведите ваше имя:",
@@ -956,8 +956,8 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Результат записи: success={success}, result={result}")
     
     if success:
-        workout_type, day, time, remaining = result
-        formatted_time = time.replace(':', '.')
+        workout_type, day, session_time, remaining = result
+        formatted_time = session_time.replace(':', '.')
         
         await update.message.reply_text(
             f"✅ **Вы записаны!**\n\n"
@@ -1018,13 +1018,21 @@ def main():
     if job_queue:
         tz = pytz.timezone('Europe/Minsk')
         
-        # Ежедневная рассылка в 15:00 по Минску
-        job_queue.run_daily(send_daily_schedule, time=time(hour=15, minute=0, tzinfo=tz))
+        # FIX 8: используем dt.time вместо просто time — теперь нет конфликта имён
+        job_queue.run_daily(
+            send_daily_schedule,
+            time=dt.time(hour=15, minute=0, tzinfo=tz)
+        )
         logger.info("📅 Ежедневная рассылка настроена на 15:00 по Минску")
         
-        # Еженедельный сброс мест в 00:00 по Минску (каждый день, но внутри функции проверка на понедельник)
-        job_queue.run_daily(reset_weekly_spots, time=time(hour=0, minute=0, tzinfo=tz))
-        logger.info("🔄 Еженедельный сброс мест настроен на 00:00 по Минску")
+        # FIX 9: сброс мест — каждое воскресенье в 23:59 по Минску
+        job_queue.run_daily(
+            reset_weekly_spots,
+            time=dt.time(hour=23, minute=59, tzinfo=tz)
+        )
+        logger.info("🔄 Еженедельный сброс мест настроен на 23:59 по Минску (воскресенье)")
+    else:
+        logger.warning("⚠️ job_queue недоступен! Установите: pip install python-telegram-bot[job-queue]")
     
     logger.info("🚀 Бот запущен...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
