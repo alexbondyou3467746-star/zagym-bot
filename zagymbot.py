@@ -112,7 +112,6 @@ def populate_initial_data():
         'Бокс 8-10 дети', 'Total body'
     ]
     
-    # Очищаем старые данные
     cursor.execute('DELETE FROM workout_types')
     cursor.execute('DELETE FROM schedule')
     
@@ -123,7 +122,6 @@ def populate_initial_data():
             logger.error(f"Ошибка при добавлении типа {wt}: {e}")
     
     schedule_data = [
-        # Понедельник
         ('Интервальная тренировка', 'Понедельник', '9:20-10:30', 'сила + кардио'),
         ('Стретчинг', 'Понедельник', '11:00-12:00', ''),
         ('Здоровая спина', 'Понедельник', '18:00-19:00', ''),
@@ -131,21 +129,18 @@ def populate_initial_data():
         ('Бокс', 'Понедельник', '20:00-21:00', ''),
         ('Бедра ягодицы пресс', 'Понедельник', '20:00-21:00', ''),
         
-        # Вторник
         ('Бокс', 'Вторник', '10:00-11:00', ''),
         ('Стретчинг', 'Вторник', '11:00-12:00', ''),
         ('Бокс 8-10 дети', 'Вторник', '15:00-16:00', ''),
         ('Стретчинг', 'Вторник', '19:00-20:00', ''),
         ('Total body', 'Вторник', '20:00-21:00', ''),
         
-        # Среда
         ('Пилатес', 'Среда', '9:20-10:30', ''),
         ('Здоровая спина', 'Среда', '18:00-19:00', ''),
         ('Пилатес', 'Среда', '19:00-20:00', ''),
         ('Бокс', 'Среда', '20:00-21:00', ''),
         ('Бедра ягодицы пресс', 'Среда', '20:00-21:00', ''),
         
-        # Четверг
         ('Йога', 'Четверг', '8:00-9:00', ''),
         ('Пилатес', 'Четверг', '9:20-10:20', 'осанка и мягкое укрепление'),
         ('Бокс 8-10 дети', 'Четверг', '15:00-16:00', ''),
@@ -153,13 +148,11 @@ def populate_initial_data():
         ('Здоровая спина', 'Четверг', '19:00-20:00', ''),
         ('Бокс', 'Четверг', '20:00-21:00', ''),
         
-        # Пятница
         ('Бокс', 'Пятница', '8:30-9:30', ''),
         ('Бедра ягодицы пресс', 'Пятница', '9:20-10:30', ''),
         ('Бокс', 'Пятница', '18:00-19:00', ''),
         ('Total body', 'Пятница', '18:00-19:00', ''),
         
-        # Суббота
         ('Здоровая спина', 'Суббота', '9:00-10:00', ''),
         ('Бокс', 'Суббота', '10:00-11:00', ''),
         ('Пилатес', 'Суббота', '11:00-12:00', ''),
@@ -167,7 +160,6 @@ def populate_initial_data():
         ('Total body', 'Суббота', '14:00-15:00', ''),
         ('Стретчинг', 'Суббота', '15:00-16:00', ''),
         
-        # Воскресенье
         ('Бокс', 'Воскресенье', '11:00-12:00', ''),
         ('Йога', 'Воскресенье', '13:00-14:00', ''),
         ('Пилатес', 'Воскресенье', '14:00-15:00', 'осанка и мягкое укрепление'),
@@ -183,13 +175,10 @@ def populate_initial_data():
     conn.close()
     logger.info("Расписание загружено")
 
-# --- Сброс мест КАЖДОЕ ВОСКРЕСЕНЬЕ в 14:00 ---
+# --- Сброс мест по воскресеньям в 14:00 ---
 def reset_weekly_spots():
-    """Обнулить количество забронированных мест (каждое воскресенье)"""
-    if datetime.now().weekday() != 6:  # 6 = воскресенье
-        logger.info("Сегодня не воскресенье, сброс мест не выполняется")
+    if datetime.now().weekday() != 6:
         return
-    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('UPDATE schedule SET booked_spots = 0')
@@ -203,16 +192,12 @@ def save_user(user_id, username, first_name, last_name):
     cursor = conn.cursor()
     cursor.execute('SELECT user_id FROM users WHERE user_id = %s', (user_id,))
     exists = cursor.fetchone()
-    
     if not exists:
         cursor.execute('''
             INSERT INTO users (user_id, username, first_name, last_name, subscribed)
             VALUES (%s, %s, %s, %s, TRUE)
         ''', (user_id, username, first_name, last_name))
-        logger.info(f"✅ Новый пользователь {user_id} добавлен с подпиской TRUE")
-    else:
-        logger.info(f"👤 Пользователь {user_id} уже существует")
-    
+        logger.info(f"✅ Новый пользователь {user_id}")
     conn.commit()
     conn.close()
 
@@ -231,7 +216,6 @@ def unsubscribe_user(user_id):
     cursor.execute('UPDATE users SET subscribed = FALSE WHERE user_id = %s', (user_id,))
     conn.commit()
     conn.close()
-    logger.info(f"🔕 Пользователь {user_id} отписался от рассылки")
 
 def subscribe_user(user_id):
     conn = get_db_connection()
@@ -239,7 +223,6 @@ def subscribe_user(user_id):
     cursor.execute('UPDATE users SET subscribed = TRUE WHERE user_id = %s', (user_id,))
     conn.commit()
     conn.close()
-    logger.info(f"🔔 Пользователь {user_id} подписался на рассылку")
 
 # --- Функции для работы с расписанием ---
 def get_workout_types():
@@ -342,14 +325,14 @@ def book_session(session_id, user_id, user_name, phone):
     conn.close()
     return True, (workout_type, day, time, total_spots - (booked_spots + 1))
 
-# --- ЕЖЕДНЕВНАЯ РАССЫЛКА В 15:00 ---
+# --- ЕЖЕДНЕВНАЯ РАССЫЛКА ---
 async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("🚀 ЗАПУСК ЕЖЕДНЕВНОЙ РАССЫЛКИ (15:00)")
+    logger.info("🚀 ЗАПУСК ЕЖЕДНЕВНОЙ РАССЫЛКИ")
     
     try:
         tomorrow_day, sessions = get_tomorrow_schedule()
         short_day = DAYS_SHORT.get(tomorrow_day, tomorrow_day)
-        logger.info(f"📅 Завтра: {tomorrow_day} ({short_day}), найдено тренировок: {len(sessions)}")
+        logger.info(f"📅 Завтра: {short_day}, тренировок: {len(sessions)}")
         
         if not sessions:
             logger.warning("❌ Нет тренировок на завтра")
@@ -358,8 +341,7 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
         message = f"🟠 Расписание на завтра! {short_day}:\n\n"
         for workout_type, time, description, session_id, booked_spots, total_spots in sessions:
             formatted_time = time.replace(':', '.')
-            message += f"⏰ {formatted_time}\n"
-            message += f"• {workout_type}"
+            message += f"⏰ {formatted_time}\n• {workout_type}"
             if description:
                 message += f"\n  {description}"
             message += "\n\n"
@@ -375,8 +357,6 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
         
         users = get_subscribed_users()
-        logger.info(f"📢 Подписанных пользователей: {len(users)}")
-        
         if not users:
             logger.warning("❌ Нет подписанных пользователей")
             return
@@ -398,6 +378,14 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"✅ Рассылка завершена: {sent}/{len(users)}")
     except Exception as e:
         logger.error(f"💥 Ошибка: {e}")
+
+# --- КОМАНДА ДЛЯ РУЧНОЙ РАССЫЛКИ /send_now ---
+async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    logger.info(f"🔔 Команда /send_now от пользователя {user_id}")
+    await update.message.reply_text("📤 Отправляю расписание на завтра всем подписанным пользователям...")
+    await send_daily_schedule(context)
+    await update.message.reply_text("✅ Рассылка завершена!")
 
 # --- Текстовые сообщения ---
 WELCOME_MESSAGE = (
@@ -603,16 +591,8 @@ def get_subscription_keyboard(user_id):
     cursor.execute('SELECT subscribed FROM users WHERE user_id = %s', (user_id,))
     result = cursor.fetchone()
     conn.close()
-    
-    # По умолчанию пользователь считается подписанным
     subscribed = result['subscribed'] if result else True
-    
-    keyboard = []
-    if subscribed:
-        keyboard.append([InlineKeyboardButton("🔕 Отписаться от рассылки", callback_data="unsubscribe")])
-    else:
-        keyboard.append([InlineKeyboardButton("🔔 Подписаться на рассылку", callback_data="subscribe")])
-    
+    keyboard = [[InlineKeyboardButton("🔕 Отписаться от рассылки" if subscribed else "🔔 Подписаться на рассылку", callback_data="unsubscribe" if subscribed else "subscribe")]]
     keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -852,6 +832,7 @@ def main():
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(handle_inline_buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons))
+    app.add_handler(CommandHandler("send_now", send_now))  # <--- КОМАНДА ДЛЯ РУЧНОЙ РАССЫЛКИ
     
     jq = app.job_queue
     if jq:
