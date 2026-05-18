@@ -325,13 +325,26 @@ def book_session(session_id, user_id, user_name, phone):
     conn.close()
     return True, (workout_type, day, time, total_spots - (booked_spots + 1))
 
-# --- ЕЖЕДНЕВНАЯ РАССЫЛКА ---
+# --- ЕЖЕДНЕВНАЯ РАССЫЛКА (с сортировкой по времени и убранным словом "свободно") ---
 async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
     logger.info("🚀 ЗАПУСК ЕЖЕДНЕВНОЙ РАССЫЛКИ")
     
     try:
         tomorrow_day, sessions = get_tomorrow_schedule()
         short_day = DAYS_SHORT.get(tomorrow_day, tomorrow_day)
+        
+        # СОРТИРУЕМ тренировки по времени (по возрастанию)
+        def sort_by_time(item):
+            time_str = item[1]  # время в формате "9:20-10:30"
+            start_time = time_str.split('-')[0].strip().replace(':', '.')
+            try:
+                hours, minutes = start_time.split('.')
+                return int(hours) * 100 + int(minutes)
+            except:
+                return 0
+        
+        sessions = sorted(sessions, key=sort_by_time)
+        
         logger.info(f"📅 Завтра: {short_day}, тренировок: {len(sessions)}")
         
         if not sessions:
@@ -341,7 +354,8 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
         message = f"🟠 Расписание на завтра! {short_day}:\n\n"
         for workout_type, time, description, session_id, booked_spots, total_spots in sessions:
             formatted_time = time.replace(':', '.')
-            message += f"⏰ {formatted_time}\n• {workout_type}"
+            message += f"⏰ {formatted_time}\n"
+            message += f"• {workout_type}"
             if description:
                 message += f"\n  {description}"
             message += "\n\n"
@@ -352,7 +366,8 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
             available = total_spots - booked_spots
             status = "✅" if available > 0 else "❌"
             formatted_time = time.replace(':', '.')
-            button_text = f"{status} {workout_type} - {formatted_time} (свободно: {available}/{total_spots})"
+            # Убрали слово "свободно"
+            button_text = f"{status} {workout_type} - {formatted_time} ({available}/{total_spots})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
         keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
         
@@ -386,6 +401,29 @@ async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📤 Отправляю расписание на завтра всем подписанным пользователям...")
     await send_daily_schedule(context)
     await update.message.reply_text("✅ Рассылка завершена!")
+
+# --- КОМАНДА ДЛЯ ПОДПИСКИ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ (для админа) ---
+async def subscribe_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ADMIN_ID = 7073843771  # Твой Telegram ID
+    
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ У вас нет прав.")
+        return
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET subscribed = TRUE')
+    conn.commit()
+    conn.close()
+    
+    # Получаем количество обновлённых пользователей
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM users')
+    count = cursor.fetchone()['count']
+    conn.close()
+    
+    await update.message.reply_text(f"✅ {count} пользователей подписаны на рассылку!")
 
 # --- Текстовые сообщения ---
 WELCOME_MESSAGE = (
@@ -620,7 +658,7 @@ def get_sessions_keyboard(workout_type):
         available = total_spots - booked_spots
         status = "✅" if available > 0 else "❌"
         short_day = DAYS_SHORT.get(day, day)
-        button_text = f"{status} {short_day} - {time.replace(':', '.')} (свободно: {available}/{total_spots})"
+        button_text = f"{status} {short_day} - {time.replace(':', '.')} ({available}/{total_spots})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
     keyboard.append([InlineKeyboardButton("« 🔙 К типам тренировок", callback_data="back_to_types")])
     keyboard.append([InlineKeyboardButton("« 🔙 В главное меню", callback_data="back_to_main")])
@@ -832,7 +870,8 @@ def main():
     app.add_handler(conv)
     app.add_handler(CallbackQueryHandler(handle_inline_buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons))
-    app.add_handler(CommandHandler("send_now", send_now))  # <--- КОМАНДА ДЛЯ РУЧНОЙ РАССЫЛКИ
+    app.add_handler(CommandHandler("send_now", send_now))
+    app.add_handler(CommandHandler("subscribe_all", subscribe_all))
     
     jq = app.job_queue
     if jq:
