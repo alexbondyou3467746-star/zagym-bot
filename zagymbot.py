@@ -36,6 +36,10 @@ DAYS_SHORT = {
     'Воскресенье': 'Вс'
 }
 
+# --- ID пользователей с правами ---
+DEVELOPER_ID = 7073843771      # Твой ID (разработчик) — доступ ко всем командам
+OWNER_ID = 188328400           # ID владелицы зала — доступ только к /stats
+
 # --- Подключение к базе данных ---
 def get_db_connection():
     database_url = os.environ.get('DATABASE_URL')
@@ -325,7 +329,7 @@ def book_session(session_id, user_id, user_name, phone):
     conn.close()
     return True, (workout_type, day, time, total_spots - (booked_spots + 1))
 
-# --- ЕЖЕДНЕВНАЯ РАССЫЛКА (с сортировкой по времени и убранным словом "свободно") ---
+# --- ЕЖЕДНЕВНАЯ РАССЫЛКА (с сортировкой по времени) ---
 async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
     logger.info("🚀 ЗАПУСК ЕЖЕДНЕВНОЙ РАССЫЛКИ")
     
@@ -333,9 +337,8 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
         tomorrow_day, sessions = get_tomorrow_schedule()
         short_day = DAYS_SHORT.get(tomorrow_day, tomorrow_day)
         
-        # СОРТИРУЕМ тренировки по времени (по возрастанию)
         def sort_by_time(item):
-            time_str = item[1]  # время в формате "9:20-10:30"
+            time_str = item[1]
             start_time = time_str.split('-')[0].strip().replace(':', '.')
             try:
                 hours, minutes = start_time.split('.')
@@ -366,7 +369,6 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
             available = total_spots - booked_spots
             status = "✅" if available > 0 else "❌"
             formatted_time = time.replace(':', '.')
-            # Убрали слово "свободно"
             button_text = f"{status} {workout_type} - {formatted_time} ({available}/{total_spots})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
         keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
@@ -394,19 +396,54 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"💥 Ошибка: {e}")
 
-# --- КОМАНДА ДЛЯ РУЧНОЙ РАССЫЛКИ /send_now ---
+# --- КОМАНДА ДЛЯ СТАТИСТИКИ (только для владелицы) ---
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ Эта команда только для владелицы зала.")
+        return
+    
+    today = datetime.now()
+    days_map = {0: 'Понедельник', 1: 'Вторник', 2: 'Среда', 3: 'Четверг', 4: 'Пятница', 5: 'Суббота', 6: 'Воскресенье'}
+    today_day = days_map[today.weekday()]
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT workout_type, time, total_spots, booked_spots
+        FROM schedule 
+        WHERE day = %s 
+        ORDER BY time
+    ''', (today_day,))
+    sessions = cursor.fetchall()
+    conn.close()
+    
+    if not sessions:
+        await update.message.reply_text(f"📅 На сегодня ({today_day}) тренировок нет.")
+        return
+    
+    message = f"📊 **Статистика на сегодня ({today_day})**\n\n"
+    for row in sessions:
+        available = row['total_spots'] - row['booked_spots']
+        formatted_time = row['time'].replace(':', '.')
+        message += f"⏰ {formatted_time} — {row['workout_type']}\n"
+        message += f"   🪑 Свободно: {available} из {row['total_spots']}\n\n"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+# --- КОМАНДА ДЛЯ РУЧНОЙ РАССЫЛКИ (только для разработчика) ---
 async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    logger.info(f"🔔 Команда /send_now от пользователя {user_id}")
+    if update.effective_user.id != DEVELOPER_ID:
+        await update.message.reply_text("⛔ У вас нет прав.")
+        return
+    
+    logger.info(f"🔔 Команда /send_now от пользователя {update.effective_user.id}")
     await update.message.reply_text("📤 Отправляю расписание на завтра всем подписанным пользователям...")
     await send_daily_schedule(context)
     await update.message.reply_text("✅ Рассылка завершена!")
 
-# --- КОМАНДА ДЛЯ ПОДПИСКИ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ (для админа) ---
+# --- КОМАНДА ДЛЯ ПОДПИСКИ ВСЕХ ПОЛЬЗОВАТЕЛЕЙ (только для разработчика) ---
 async def subscribe_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ADMIN_ID = 7073843771  # Твой Telegram ID
-    
-    if update.effective_user.id != ADMIN_ID:
+    if update.effective_user.id != DEVELOPER_ID:
         await update.message.reply_text("⛔ У вас нет прав.")
         return
     
@@ -416,7 +453,6 @@ async def subscribe_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
     
-    # Получаем количество обновлённых пользователей
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM users')
@@ -872,6 +908,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons))
     app.add_handler(CommandHandler("send_now", send_now))
     app.add_handler(CommandHandler("subscribe_all", subscribe_all))
+    app.add_handler(CommandHandler("stats", stats))  # Команда только для владелицы
     
     jq = app.job_queue
     if jq:
