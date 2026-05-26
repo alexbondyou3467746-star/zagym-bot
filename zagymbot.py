@@ -38,7 +38,7 @@ DAYS_SHORT = {
 
 # --- ID пользователей с правами ---
 DEVELOPER_ID = 7073843771      # Твой ID (разработчик) — доступ ко всем командам
-OWNER_ID = 188328400           # ID владелицы зала — доступ только к /stats
+OWNER_ID = 188328400           # ID владелицы зала — доступ к /stats и /reset_spots
 
 # --- Подключение к базе данных ---
 def get_db_connection():
@@ -429,6 +429,20 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += f"   🪑 Свободно: {available} из {row['total_spots']}\n\n"
     
     await update.message.reply_text(message, parse_mode='Markdown')
+
+# --- КОМАНДА ДЛЯ ОБНУЛЕНИЯ МЕСТ (только для владелицы) ---
+async def reset_spots(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ Эта команда только для владелицы зала.")
+        return
+    
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('UPDATE schedule SET booked_spots = 0')
+    conn.commit()
+    conn.close()
+    
+    await update.message.reply_text("✅ Все места на тренировки обнулены! Теперь везде 12 свободных мест.")
 
 # --- КОМАНДА ДЛЯ РУЧНОЙ РАССЫЛКИ (только для разработчика) ---
 async def send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -908,7 +922,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons))
     app.add_handler(CommandHandler("send_now", send_now))
     app.add_handler(CommandHandler("subscribe_all", subscribe_all))
-    app.add_handler(CommandHandler("stats", stats))  # Команда только для владелицы
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("reset_spots", reset_spots))  # Новая команда для обнуления мест
     
     jq = app.job_queue
     if jq:
