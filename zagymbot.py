@@ -77,16 +77,6 @@ SCHEDULE_TEMPLATE = [
 ]
 
 # --- Дни недели для преобразования ---
-DAYS_MAP = {
-    'Понедельник': 0,
-    'Вторник': 1,
-    'Среда': 2,
-    'Четверг': 3,
-    'Пятница': 4,
-    'Суббота': 5,
-    'Воскресенье': 6
-}
-
 WEEKDAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
 def get_week_start():
@@ -204,7 +194,7 @@ def generate_schedule():
     conn.close()
     logger.info(f"Расписание сгенерировано на 4 недели вперёд")
 
-# --- Сброс мест (обнуление booked_spots на все даты) ---
+# --- Сброс мест ---
 def reset_weekly_spots():
     """Обнулить booked_spots на все даты"""
     conn = get_db_connection()
@@ -271,22 +261,14 @@ def get_sessions_by_type(workout_type):
         WHERE workout_type = %s AND date >= CURRENT_DATE
         ORDER BY date, time
     ''', (workout_type,))
-    sessions = [(row['day'], row['time'], row['total_spots'], row['booked_spots'], row['id'], row['date']) for row in cursor.fetchall()]
+    rows = cursor.fetchall()
     conn.close()
-    return sessions
-
-def get_sessions_by_day(day):
-    """Получить все сессии для конкретного дня"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT workout_type, time, description, id, booked_spots, total_spots, date
-        FROM schedule 
-        WHERE day = %s AND date >= CURRENT_DATE
-        ORDER BY time
-    ''', (day,))
-    sessions = [(row['workout_type'], row['time'], row['description'], row['id'], row['booked_spots'], row['total_spots'], row['date']) for row in cursor.fetchall()]
-    conn.close()
+    
+    sessions = []
+    for row in rows:
+        sessions.append((row['day'], row['time'], row['total_spots'], row['booked_spots'], row['id'], row['date']))
+    
+    logger.info(f"Найдено сессий для {workout_type}: {len(sessions)}")
     return sessions
 
 def get_user_bookings(user_id):
@@ -420,7 +402,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     today = datetime.now().date()
-    today_day = WEEKDAYS[today.weekday()]
     
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -902,7 +883,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     try:
         init_database()
-        generate_schedule()  # Генерируем расписание на 4 недели
+        generate_schedule()
     except Exception as e:
         logger.error(f"Ошибка инициализации БД: {e}")
     
