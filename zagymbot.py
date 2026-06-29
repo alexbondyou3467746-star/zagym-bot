@@ -29,6 +29,17 @@ SELECTING_CLASS, SELECTING_WEEK, SELECTING_DATE, ENTERING_NAME, REQUESTING_PHONE
 DEVELOPER_ID = 7073843771
 OWNER_ID = 188328400
 
+# --- Сокращённые дни недели ---
+DAYS_SHORT = {
+    'Понедельник': 'Пн',
+    'Вторник': 'Вт',
+    'Среда': 'Ср',
+    'Четверг': 'Чт',
+    'Пятница': 'Пт',
+    'Суббота': 'Сб',
+    'Воскресенье': 'Вс'
+}
+
 # --- Расписание (шаблон: день недели, время, тип, описание) ---
 SCHEDULE_TEMPLATE = [
     ('Понедельник', '9:20-10:30', 'Интервальная тренировка', 'сила + кардио'),
@@ -342,7 +353,7 @@ async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
             return
         
         date_str = tomorrow_date.strftime('%d.%m')
-        short_day = tomorrow_day[:2]
+        short_day = DAYS_SHORT.get(tomorrow_day, tomorrow_day[:2])
         
         message = f"🟠 Расписание на завтра! {short_day} {date_str}:\n\n"
         for workout_type, time, description, session_id, booked_spots, total_spots in sessions:
@@ -686,7 +697,7 @@ def get_weeks_keyboard(workout_type):
     return InlineKeyboardMarkup(keyboard)
 
 def get_sessions_keyboard(workout_type, week_offset):
-    """Клавиатура с тренировками на выбранную неделю"""
+    """Клавиатура с тренировками на выбранную неделю (с сокращёнными днями)"""
     sessions = get_sessions_by_type_and_week(workout_type, week_offset)
     keyboard = []
     
@@ -694,7 +705,7 @@ def get_sessions_keyboard(workout_type, week_offset):
         available = total_spots - booked_spots
         status = "✅" if available > 0 else "❌"
         date_str = date.strftime('%d.%m')
-        short_day = day[:2]
+        short_day = DAYS_SHORT.get(day, day[:2])
         button_text = f"{status} {short_day} {date_str} - {time.replace(':', '.')} ({available}/{total_spots})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
     
@@ -722,7 +733,7 @@ def get_my_bookings_keyboard(user_id):
     keyboard = []
     for booking_id, workout_type, day, time, date in bookings:
         date_str = date.strftime('%d.%m')
-        short_day = day[:2]
+        short_day = DAYS_SHORT.get(day, day[:2])
         keyboard.append([InlineKeyboardButton(f"❌ {workout_type} - {short_day} {date_str} {time.replace(':', '.')}", callback_data=f"cancel_{booking_id}")])
     keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
     return InlineKeyboardMarkup(keyboard)
@@ -786,7 +797,7 @@ async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TY
         if success:
             workout_type, day, time, date = result
             date_str = date.strftime('%d.%m')
-            short_day = day[:2]
+            short_day = DAYS_SHORT.get(day, day[:2])
             await query.edit_message_text(f"✅ Запись отменена!\n\n🏋️ {workout_type}\n📅 {short_day} {date_str}\n⏰ {time.replace(':', '.')}", reply_markup=get_back_to_main_keyboard())
         else:
             await query.edit_message_text(f"❌ {result}", reply_markup=get_back_to_main_keyboard())
@@ -821,7 +832,7 @@ async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TY
         row = cursor.fetchone()
         conn.close()
         date_str = row['date'].strftime('%d.%m')
-        short_day = row['day'][:2]
+        short_day = DAYS_SHORT.get(row['day'], row['day'][:2])
         await query.edit_message_text(f"Вы выбрали:\n🏋️ {row['workout_type']}\n📅 {short_day} {date_str}\n⏰ {row['time'].replace(':', '.')}\n\nВведите ваше имя:", reply_markup=get_back_to_main_keyboard())
         return ENTERING_NAME
     elif query.data == "faq_1":
@@ -877,7 +888,7 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if success:
         workout_type, day, time, date, remaining = result
         date_str = date.strftime('%d.%m')
-        short_day = day[:2]
+        short_day = DAYS_SHORT.get(day, day[:2])
         await update.message.reply_text(
             f"✅ **Вы записаны!**\n\n🏋️ {workout_type}\n📅 {short_day} {date_str}\n⏰ {time.replace(':', '.')}\n📊 Осталось мест: {remaining}\n\nЖдем вас! 💪",
             reply_markup=get_main_keyboard(),
