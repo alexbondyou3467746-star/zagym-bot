@@ -23,7 +23,7 @@ if not TOKEN:
 CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '-1003560266967'))
 
 # --- Состояния для разговора ---
-SELECTING_CLASS, SELECTING_DATE, ENTERING_NAME, REQUESTING_PHONE, SELECTING_BOOKING_TO_CANCEL = range(5)
+SELECTING_CLASS, SELECTING_WEEK, SELECTING_DATE, ENTERING_NAME, REQUESTING_PHONE, SELECTING_BOOKING_TO_CANCEL = range(6)
 
 # --- ID пользователей с правами ---
 DEVELOPER_ID = 7073843771
@@ -31,56 +31,41 @@ OWNER_ID = 188328400
 
 # --- Расписание (шаблон: день недели, время, тип, описание) ---
 SCHEDULE_TEMPLATE = [
-    # Понедельник
     ('Понедельник', '9:20-10:30', 'Интервальная тренировка', 'сила + кардио'),
     ('Понедельник', '11:00-12:00', 'Стретчинг', ''),
     ('Понедельник', '18:00-19:00', 'Здоровая спина', ''),
     ('Понедельник', '19:00-20:00', 'Пилатес', ''),
     ('Понедельник', '20:00-21:00', 'Бокс', ''),
     ('Понедельник', '20:00-21:00', 'Бедра ягодицы пресс', ''),
-    
-    # Вторник
     ('Вторник', '10:00-11:00', 'Бокс', ''),
     ('Вторник', '11:00-12:00', 'Стретчинг', ''),
     ('Вторник', '19:00-20:00', 'Стретчинг', ''),
     ('Вторник', '20:00-21:00', 'Total body', ''),
-    
-    # Среда
     ('Среда', '9:20-10:30', 'Пилатес', ''),
     ('Среда', '18:00-19:00', 'Здоровая спина', ''),
     ('Среда', '19:00-20:00', 'Пилатес', ''),
     ('Среда', '20:00-21:00', 'Бокс', ''),
     ('Среда', '20:00-21:00', 'Бедра ягодицы пресс', ''),
-    
-    # Четверг
     ('Четверг', '8:00-9:00', 'Йога', ''),
     ('Четверг', '9:20-10:20', 'Пилатес', 'осанка и мягкое укрепление'),
     ('Четверг', '18:00-19:00', 'Стретчинг+ягодицы', ''),
     ('Четверг', '19:00-20:00', 'Здоровая спина', ''),
     ('Четверг', '20:00-21:00', 'Бокс', ''),
-    
-    # Пятница
     ('Пятница', '8:30-9:30', 'Бокс', ''),
     ('Пятница', '9:20-10:30', 'Бедра ягодицы пресс', ''),
     ('Пятница', '18:00-19:00', 'Бокс', ''),
-    
-    # Суббота
     ('Суббота', '9:00-10:00', 'Здоровая спина', ''),
     ('Суббота', '10:00-11:00', 'Бокс', ''),
     ('Суббота', '11:00-12:00', 'Пилатес', ''),
     ('Суббота', '12:00-13:00', 'Total body', ''),
     ('Суббота', '13:00-14:00', 'Бокс 8-10 дети', ''),
     ('Суббота', '13:00-14:00', 'Стретчинг', ''),
-    
-    # Воскресенье
     ('Воскресенье', '11:00-12:00', 'Бокс', ''),
 ]
 
-# --- Дни недели для преобразования ---
 WEEKDAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 
 def get_week_start():
-    """Получить дату начала текущей недели (понедельник)"""
     today = datetime.now().date()
     return today - timedelta(days=today.weekday())
 
@@ -153,15 +138,12 @@ def init_database():
 
 # --- Генерация расписания на 4 недели вперёд ---
 def generate_schedule():
-    """Генерирует расписание на 4 недели вперёд"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    # Очищаем старые данные
     cursor.execute('DELETE FROM schedule')
     cursor.execute('DELETE FROM workout_types')
     
-    # Собираем все типы тренировок
     workout_types = set()
     for day, time, wtype, desc in SCHEDULE_TEMPLATE:
         workout_types.add(wtype)
@@ -172,7 +154,6 @@ def generate_schedule():
         except Exception as e:
             logger.error(f"Ошибка при добавлении типа {wt}: {e}")
     
-    # Генерируем даты на 4 недели вперёд
     week_start = get_week_start()
     dates = []
     for week in range(4):
@@ -180,7 +161,6 @@ def generate_schedule():
             date = week_start + timedelta(days=week * 7 + day_offset)
             dates.append(date)
     
-    # Заполняем расписание
     for date in dates:
         day_name = WEEKDAYS[date.weekday()]
         for template_day, time, wtype, desc in SCHEDULE_TEMPLATE:
@@ -192,11 +172,10 @@ def generate_schedule():
     
     conn.commit()
     conn.close()
-    logger.info(f"Расписание сгенерировано на 4 недели вперёд")
+    logger.info("Расписание сгенерировано на 4 недели вперёд")
 
 # --- Сброс мест ---
 def reset_weekly_spots():
-    """Обнулить booked_spots на все даты"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('UPDATE schedule SET booked_spots = 0')
@@ -251,16 +230,19 @@ def get_workout_types():
     conn.close()
     return types
 
-def get_sessions_by_type(workout_type):
-    """Получить все сессии для конкретного типа тренировки (на все даты)"""
+def get_sessions_by_type_and_week(workout_type, week_offset):
+    """Получить сессии для типа тренировки на конкретную неделю"""
+    week_start = get_week_start() + timedelta(days=week_offset * 7)
+    week_end = week_start + timedelta(days=6)
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT day, time, total_spots, booked_spots, id, date
         FROM schedule 
-        WHERE workout_type = %s AND date >= CURRENT_DATE
+        WHERE workout_type = %s AND date >= %s AND date <= %s
         ORDER BY date, time
-    ''', (workout_type,))
+    ''', (workout_type, week_start, week_end))
     rows = cursor.fetchall()
     conn.close()
     
@@ -268,8 +250,17 @@ def get_sessions_by_type(workout_type):
     for row in rows:
         sessions.append((row['day'], row['time'], row['total_spots'], row['booked_spots'], row['id'], row['date']))
     
-    logger.info(f"Найдено сессий для {workout_type}: {len(sessions)}")
     return sessions
+
+def get_weeks():
+    """Получить список недель с датами"""
+    week_start = get_week_start()
+    weeks = []
+    for i in range(4):
+        start = week_start + timedelta(days=i * 7)
+        end = start + timedelta(days=6)
+        weeks.append((start, end))
+    return weeks
 
 def get_user_bookings(user_id):
     conn = get_db_connection()
@@ -677,9 +668,28 @@ def get_workout_types_keyboard():
     keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_sessions_keyboard(workout_type):
-    sessions = get_sessions_by_type(workout_type)
+def get_weeks_keyboard(workout_type):
+    """Клавиатура с выбором недели"""
+    weeks = get_weeks()
     keyboard = []
+    
+    labels = ['Текущая неделя', 'Следующая неделя', 'Через неделю', 'Через 2 недели']
+    
+    for i, (start, end) in enumerate(weeks):
+        start_str = start.strftime('%d.%m')
+        end_str = end.strftime('%d.%m')
+        label = f"{labels[i]} ({start_str} - {end_str})"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"week_{workout_type}_{i}")])
+    
+    keyboard.append([InlineKeyboardButton("« 🔙 К типам тренировок", callback_data="back_to_types")])
+    keyboard.append([InlineKeyboardButton("« 🔙 В главное меню", callback_data="back_to_main")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_sessions_keyboard(workout_type, week_offset):
+    """Клавиатура с тренировками на выбранную неделю"""
+    sessions = get_sessions_by_type_and_week(workout_type, week_offset)
+    keyboard = []
+    
     for day, time, total_spots, booked_spots, session_id, date in sessions:
         available = total_spots - booked_spots
         status = "✅" if available > 0 else "❌"
@@ -687,7 +697,8 @@ def get_sessions_keyboard(workout_type):
         short_day = day[:2]
         button_text = f"{status} {short_day} {date_str} - {time.replace(':', '.')} ({available}/{total_spots})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
-    keyboard.append([InlineKeyboardButton("« 🔙 К типам тренировок", callback_data="back_to_types")])
+    
+    keyboard.append([InlineKeyboardButton("« 🔙 К выбору недели", callback_data=f"back_to_weeks_{workout_type}")])
     keyboard.append([InlineKeyboardButton("« 🔙 В главное меню", callback_data="back_to_main")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -783,12 +794,24 @@ async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TY
     elif query.data.startswith("type_"):
         workout_type = query.data[5:]
         context.user_data['selected_workout_type'] = workout_type
-        sessions = get_sessions_by_type(workout_type)
+        await query.edit_message_text(f"Выберите неделю для {workout_type}:", reply_markup=get_weeks_keyboard(workout_type))
+        return SELECTING_WEEK
+    elif query.data.startswith("week_"):
+        parts = query.data.split('_')
+        workout_type = parts[1]
+        week_offset = int(parts[2])
+        context.user_data['selected_workout_type'] = workout_type
+        context.user_data['selected_week_offset'] = week_offset
+        sessions = get_sessions_by_type_and_week(workout_type, week_offset)
         if not sessions:
-            await query.edit_message_text(f"Для '{workout_type}' нет доступных сессий.", reply_markup=get_back_to_main_keyboard())
-            return SELECTING_CLASS
-        await query.edit_message_text(f"Выберите дату для {workout_type}:", reply_markup=get_sessions_keyboard(workout_type))
+            await query.edit_message_text(f"На выбранной неделе тренировок '{workout_type}' нет.", reply_markup=get_weeks_keyboard(workout_type))
+            return SELECTING_WEEK
+        await query.edit_message_text(f"Выберите дату для {workout_type}:", reply_markup=get_sessions_keyboard(workout_type, week_offset))
         return SELECTING_DATE
+    elif query.data.startswith("back_to_weeks_"):
+        workout_type = query.data[13:]
+        await query.edit_message_text(f"Выберите неделю для {workout_type}:", reply_markup=get_weeks_keyboard(workout_type))
+        return SELECTING_WEEK
     elif query.data.startswith("session_"):
         session_id = int(query.data[8:])
         context.user_data['selected_session_id'] = session_id
@@ -893,6 +916,7 @@ def main():
         entry_points=[MessageHandler(filters.Regex('^(📝 Записаться)$'), handle_reply_buttons)],
         states={
             SELECTING_CLASS: [CallbackQueryHandler(handle_inline_buttons, pattern='^type_|^back_to_')],
+            SELECTING_WEEK: [CallbackQueryHandler(handle_inline_buttons, pattern='^week_|^back_to_')],
             SELECTING_DATE: [CallbackQueryHandler(handle_inline_buttons, pattern='^session_|^back_to_')],
             ENTERING_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)],
             REQUESTING_PHONE: [MessageHandler(filters.CONTACT | filters.TEXT & ~filters.COMMAND, handle_phone)],
