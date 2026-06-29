@@ -25,20 +25,74 @@ CHANNEL_ID = int(os.environ.get('CHANNEL_ID', '-1003560266967'))
 # --- Состояния для разговора ---
 SELECTING_CLASS, SELECTING_DATE, ENTERING_NAME, REQUESTING_PHONE, SELECTING_BOOKING_TO_CANCEL = range(5)
 
-# --- Сокращённые дни недели ---
-DAYS_SHORT = {
-    'Понедельник': 'Пн',
-    'Вторник': 'Вт',
-    'Среда': 'Ср',
-    'Четверг': 'Чт',
-    'Пятница': 'Пт',
-    'Суббота': 'Сб',
-    'Воскресенье': 'Вс'
+# --- ID пользователей с правами ---
+DEVELOPER_ID = 7073843771
+OWNER_ID = 188328400
+
+# --- Расписание (шаблон: день недели, время, тип, описание) ---
+SCHEDULE_TEMPLATE = [
+    # Понедельник
+    ('Понедельник', '9:20-10:30', 'Интервальная тренировка', 'сила + кардио'),
+    ('Понедельник', '11:00-12:00', 'Стретчинг', ''),
+    ('Понедельник', '18:00-19:00', 'Здоровая спина', ''),
+    ('Понедельник', '19:00-20:00', 'Пилатес', ''),
+    ('Понедельник', '20:00-21:00', 'Бокс', ''),
+    ('Понедельник', '20:00-21:00', 'Бедра ягодицы пресс', ''),
+    
+    # Вторник
+    ('Вторник', '10:00-11:00', 'Бокс', ''),
+    ('Вторник', '11:00-12:00', 'Стретчинг', ''),
+    ('Вторник', '19:00-20:00', 'Стретчинг', ''),
+    ('Вторник', '20:00-21:00', 'Total body', ''),
+    
+    # Среда
+    ('Среда', '9:20-10:30', 'Пилатес', ''),
+    ('Среда', '18:00-19:00', 'Здоровая спина', ''),
+    ('Среда', '19:00-20:00', 'Пилатес', ''),
+    ('Среда', '20:00-21:00', 'Бокс', ''),
+    ('Среда', '20:00-21:00', 'Бедра ягодицы пресс', ''),
+    
+    # Четверг
+    ('Четверг', '8:00-9:00', 'Йога', ''),
+    ('Четверг', '9:20-10:20', 'Пилатес', 'осанка и мягкое укрепление'),
+    ('Четверг', '18:00-19:00', 'Стретчинг+ягодицы', ''),
+    ('Четверг', '19:00-20:00', 'Здоровая спина', ''),
+    ('Четверг', '20:00-21:00', 'Бокс', ''),
+    
+    # Пятница
+    ('Пятница', '8:30-9:30', 'Бокс', ''),
+    ('Пятница', '9:20-10:30', 'Бедра ягодицы пресс', ''),
+    ('Пятница', '18:00-19:00', 'Бокс', ''),
+    
+    # Суббота
+    ('Суббота', '9:00-10:00', 'Здоровая спина', ''),
+    ('Суббота', '10:00-11:00', 'Бокс', ''),
+    ('Суббота', '11:00-12:00', 'Пилатес', ''),
+    ('Суббота', '12:00-13:00', 'Total body', ''),
+    ('Суббота', '13:00-14:00', 'Бокс 8-10 дети', ''),
+    ('Суббота', '13:00-14:00', 'Стретчинг', ''),
+    
+    # Воскресенье
+    ('Воскресенье', '11:00-12:00', 'Бокс', ''),
+]
+
+# --- Дни недели для преобразования ---
+DAYS_MAP = {
+    'Понедельник': 0,
+    'Вторник': 1,
+    'Среда': 2,
+    'Четверг': 3,
+    'Пятница': 4,
+    'Суббота': 5,
+    'Воскресенье': 6
 }
 
-# --- ID пользователей с правами ---
-DEVELOPER_ID = 7073843771      # Твой ID (разработчик)
-OWNER_ID = 188328400           # ID владелицы зала
+WEEKDAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+
+def get_week_start():
+    """Получить дату начала текущей недели (понедельник)"""
+    today = datetime.now().date()
+    return today - timedelta(days=today.weekday())
 
 # --- Подключение к базе данных ---
 def get_db_connection():
@@ -81,9 +135,10 @@ def init_database():
             day TEXT NOT NULL,
             time TEXT NOT NULL,
             description TEXT,
+            date DATE NOT NULL,
             total_spots INTEGER DEFAULT 12,
             booked_spots INTEGER DEFAULT 0,
-            UNIQUE(workout_type, day, time)
+            UNIQUE(workout_type, day, time, date)
         )
     ''')
     
@@ -96,6 +151,7 @@ def init_database():
             workout_type TEXT NOT NULL,
             day TEXT NOT NULL,
             time TEXT NOT NULL,
+            date DATE NOT NULL,
             booking_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             status TEXT DEFAULT 'active'
         )
@@ -105,19 +161,20 @@ def init_database():
     conn.close()
     logger.info("База данных инициализирована")
 
-# --- НОВОЕ РАСПИСАНИЕ (с правками) ---
-def populate_initial_data():
+# --- Генерация расписания на 4 недели вперёд ---
+def generate_schedule():
+    """Генерирует расписание на 4 недели вперёд"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    workout_types = [
-        'Йога', 'Интервальная тренировка', 'Пилатес', 'Здоровая спина',
-        'Бокс', 'Бедра ягодицы пресс', 'Стретчинг', 'Стретчинг+ягодицы',
-        'Бокс 8-10 дети', 'Total body'
-    ]
-    
-    cursor.execute('DELETE FROM workout_types')
+    # Очищаем старые данные
     cursor.execute('DELETE FROM schedule')
+    cursor.execute('DELETE FROM workout_types')
+    
+    # Собираем все типы тренировок
+    workout_types = set()
+    for day, time, wtype, desc in SCHEDULE_TEMPLATE:
+        workout_types.add(wtype)
     
     for wt in workout_types:
         try:
@@ -125,72 +182,37 @@ def populate_initial_data():
         except Exception as e:
             logger.error(f"Ошибка при добавлении типа {wt}: {e}")
     
-    schedule_data = [
-        # Понедельник
-        ('Интервальная тренировка', 'Понедельник', '9:20-10:30', 'сила + кардио'),
-        ('Стретчинг', 'Понедельник', '11:00-12:00', ''),
-        ('Здоровая спина', 'Понедельник', '18:00-19:00', ''),
-        ('Пилатес', 'Понедельник', '19:00-20:00', ''),
-        ('Бокс', 'Понедельник', '20:00-21:00', ''),
-        ('Бедра ягодицы пресс', 'Понедельник', '20:00-21:00', ''),
-        
-        # Вторник (Бокс 8-10 дети и 15:00-16:00 убраны)
-        ('Бокс', 'Вторник', '10:00-11:00', ''),
-        ('Стретчинг', 'Вторник', '11:00-12:00', ''),
-        ('Стретчинг', 'Вторник', '19:00-20:00', ''),
-        ('Total body', 'Вторник', '20:00-21:00', ''),
-        
-        # Среда
-        ('Пилатес', 'Среда', '9:20-10:30', ''),
-        ('Здоровая спина', 'Среда', '18:00-19:00', ''),
-        ('Пилатес', 'Среда', '19:00-20:00', ''),
-        ('Бокс', 'Среда', '20:00-21:00', ''),
-        ('Бедра ягодицы пресс', 'Среда', '20:00-21:00', ''),
-        
-        # Четверг (Бокс 8-10 дети 15:00-16:00 убран)
-        ('Йога', 'Четверг', '8:00-9:00', ''),
-        ('Пилатес', 'Четверг', '9:20-10:20', 'осанка и мягкое укрепление'),
-        ('Стретчинг+ягодицы', 'Четверг', '18:00-19:00', ''),
-        ('Здоровая спина', 'Четверг', '19:00-20:00', ''),
-        ('Бокс', 'Четверг', '20:00-21:00', ''),
-        
-        # Пятница
-        ('Бокс', 'Пятница', '8:30-9:30', ''),
-        ('Бедра ягодицы пресс', 'Пятница', '9:20-10:30', ''),
-        ('Бокс', 'Пятница', '18:00-19:00', ''),
-        
-        # Суббота (Стретчинг теперь в 13:00 вместе с Бокс 8-10 дети)
-        ('Здоровая спина', 'Суббота', '9:00-10:00', ''),
-        ('Бокс', 'Суббота', '10:00-11:00', ''),
-        ('Пилатес', 'Суббота', '11:00-12:00', ''),
-        ('Total body', 'Суббота', '12:00-13:00', ''),
-        ('Бокс 8-10 дети', 'Суббота', '13:00-14:00', ''),
-        ('Стретчинг', 'Суббота', '13:00-14:00', ''),
-        
-        # Воскресенье
-        ('Бокс', 'Воскресенье', '11:00-12:00', ''),
-    ]
+    # Генерируем даты на 4 недели вперёд
+    week_start = get_week_start()
+    dates = []
+    for week in range(4):
+        for day_offset in range(7):
+            date = week_start + timedelta(days=week * 7 + day_offset)
+            dates.append(date)
     
-    for workout_type, day, time, description in schedule_data:
-        cursor.execute('''
-            INSERT INTO schedule (workout_type, day, time, description, total_spots, booked_spots)
-            VALUES (%s, %s, %s, %s, 12, 0)
-        ''', (workout_type, day, time, description))
+    # Заполняем расписание
+    for date in dates:
+        day_name = WEEKDAYS[date.weekday()]
+        for template_day, time, wtype, desc in SCHEDULE_TEMPLATE:
+            if template_day == day_name:
+                cursor.execute('''
+                    INSERT INTO schedule (workout_type, day, time, description, date, total_spots, booked_spots)
+                    VALUES (%s, %s, %s, %s, %s, 12, 0)
+                ''', (wtype, day_name, time, desc, date))
     
     conn.commit()
     conn.close()
-    logger.info("Расписание загружено")
+    logger.info(f"Расписание сгенерировано на 4 недели вперёд")
 
-# --- Сброс мест по воскресеньям в 14:00 ---
+# --- Сброс мест (обнуление booked_spots на все даты) ---
 def reset_weekly_spots():
-    if datetime.now().weekday() != 6:
-        return
+    """Обнулить booked_spots на все даты"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('UPDATE schedule SET booked_spots = 0')
     conn.commit()
     conn.close()
-    logger.info("🔄 Воскресный сброс мест выполнен")
+    logger.info("🔄 Сброс мест выполнен")
 
 # --- Функции для работы с пользователями ---
 def save_user(user_id, username, first_name, last_name):
@@ -240,25 +262,30 @@ def get_workout_types():
     return types
 
 def get_sessions_by_type(workout_type):
+    """Получить все сессии для конкретного типа тренировки (на все даты)"""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT day, time, total_spots, booked_spots, id 
+        SELECT day, time, total_spots, booked_spots, id, date
         FROM schedule 
-        WHERE workout_type = %s 
-        ORDER BY 
-            CASE day
-                WHEN 'Понедельник' THEN 1
-                WHEN 'Вторник' THEN 2
-                WHEN 'Среда' THEN 3
-                WHEN 'Четверг' THEN 4
-                WHEN 'Пятница' THEN 5
-                WHEN 'Суббота' THEN 6
-                WHEN 'Воскресенье' THEN 7
-            END,
-            time
+        WHERE workout_type = %s AND date >= CURRENT_DATE
+        ORDER BY date, time
     ''', (workout_type,))
-    sessions = [(row['day'], row['time'], row['total_spots'], row['booked_spots'], row['id']) for row in cursor.fetchall()]
+    sessions = [(row['day'], row['time'], row['total_spots'], row['booked_spots'], row['id'], row['date']) for row in cursor.fetchall()]
+    conn.close()
+    return sessions
+
+def get_sessions_by_day(day):
+    """Получить все сессии для конкретного дня"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT workout_type, time, description, id, booked_spots, total_spots, date
+        FROM schedule 
+        WHERE day = %s AND date >= CURRENT_DATE
+        ORDER BY time
+    ''', (day,))
+    sessions = [(row['workout_type'], row['time'], row['description'], row['id'], row['booked_spots'], row['total_spots'], row['date']) for row in cursor.fetchall()]
     conn.close()
     return sessions
 
@@ -266,19 +293,19 @@ def get_user_bookings(user_id):
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT id, workout_type, day, time 
+        SELECT id, workout_type, day, time, date
         FROM bookings 
-        WHERE user_id = %s AND status = 'active'
-        ORDER BY booking_date
+        WHERE user_id = %s AND status = 'active' AND date >= CURRENT_DATE
+        ORDER BY date, time
     ''', (user_id,))
-    bookings = [(row['id'], row['workout_type'], row['day'], row['time']) for row in cursor.fetchall()]
+    bookings = [(row['id'], row['workout_type'], row['day'], row['time'], row['date']) for row in cursor.fetchall()]
     conn.close()
     return bookings
 
 def cancel_booking(booking_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT workout_type, day, time FROM bookings WHERE id = %s AND status = %s', (booking_id, 'active'))
+    cursor.execute('SELECT workout_type, day, time, date FROM bookings WHERE id = %s AND status = %s', (booking_id, 'active'))
     booking = cursor.fetchone()
     if not booking:
         conn.close()
@@ -287,76 +314,64 @@ def cancel_booking(booking_id):
     cursor.execute('''
         UPDATE schedule 
         SET booked_spots = booked_spots - 1 
-        WHERE workout_type = %s AND day = %s AND time = %s
-    ''', (booking['workout_type'], booking['day'], booking['time']))
+        WHERE workout_type = %s AND day = %s AND time = %s AND date = %s
+    ''', (booking['workout_type'], booking['day'], booking['time'], booking['date']))
     conn.commit()
     conn.close()
-    return True, (booking['workout_type'], booking['day'], booking['time'])
+    return True, (booking['workout_type'], booking['day'], booking['time'], booking['date'])
 
 def get_tomorrow_schedule():
-    tomorrow = datetime.now() + timedelta(days=1)
-    days_map = {0: 'Понедельник', 1: 'Вторник', 2: 'Среда', 3: 'Четверг', 4: 'Пятница', 5: 'Суббота', 6: 'Воскресенье'}
-    tomorrow_day = days_map[tomorrow.weekday()]
+    tomorrow = datetime.now().date() + timedelta(days=1)
+    tomorrow_day = WEEKDAYS[tomorrow.weekday()]
     
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         SELECT workout_type, time, description, id, booked_spots, total_spots
         FROM schedule 
-        WHERE day = %s 
+        WHERE day = %s AND date = %s
         ORDER BY time
-    ''', (tomorrow_day,))
+    ''', (tomorrow_day, tomorrow))
     sessions = [(row['workout_type'], row['time'], row['description'], row['id'], row['booked_spots'], row['total_spots']) for row in cursor.fetchall()]
     conn.close()
-    return tomorrow_day, sessions
+    return tomorrow_day, tomorrow, sessions
 
 def book_session(session_id, user_id, user_name, phone):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT workout_type, day, time, booked_spots, total_spots FROM schedule WHERE id = %s', (session_id,))
+    cursor.execute('SELECT workout_type, day, time, booked_spots, total_spots, date FROM schedule WHERE id = %s', (session_id,))
     session = cursor.fetchone()
     if not session:
         conn.close()
         return False, "Сессия не найдена"
-    workout_type, day, time, booked_spots, total_spots = session['workout_type'], session['day'], session['time'], session['booked_spots'], session['total_spots']
+    workout_type, day, time, booked_spots, total_spots, date = session['workout_type'], session['day'], session['time'], session['booked_spots'], session['total_spots'], session['date']
     if booked_spots >= total_spots:
         conn.close()
         return False, "Нет свободных мест"
     cursor.execute('UPDATE schedule SET booked_spots = booked_spots + 1 WHERE id = %s', (session_id,))
     cursor.execute('''
-        INSERT INTO bookings (user_id, user_name, phone, workout_type, day, time, status)
-        VALUES (%s, %s, %s, %s, %s, %s, 'active')
-    ''', (user_id, user_name, phone, workout_type, day, time))
+        INSERT INTO bookings (user_id, user_name, phone, workout_type, day, time, date, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, 'active')
+    ''', (user_id, user_name, phone, workout_type, day, time, date))
     conn.commit()
     conn.close()
-    return True, (workout_type, day, time, total_spots - (booked_spots + 1))
+    return True, (workout_type, day, time, date, total_spots - (booked_spots + 1))
 
 # --- ЕЖЕДНЕВНАЯ РАССЫЛКА ---
 async def send_daily_schedule(context: ContextTypes.DEFAULT_TYPE):
     logger.info("🚀 ЗАПУСК ЕЖЕДНЕВНОЙ РАССЫЛКИ")
     
     try:
-        tomorrow_day, sessions = get_tomorrow_schedule()
-        short_day = DAYS_SHORT.get(tomorrow_day, tomorrow_day)
-        
-        def sort_by_time(item):
-            time_str = item[1]
-            start_time = time_str.split('-')[0].strip().replace(':', '.')
-            try:
-                hours, minutes = start_time.split('.')
-                return int(hours) * 100 + int(minutes)
-            except:
-                return 0
-        
-        sessions = sorted(sessions, key=sort_by_time)
-        
-        logger.info(f"📅 Завтра: {short_day}, тренировок: {len(sessions)}")
+        tomorrow_day, tomorrow_date, sessions = get_tomorrow_schedule()
         
         if not sessions:
             logger.warning("❌ Нет тренировок на завтра")
             return
         
-        message = f"🟠 Расписание на завтра! {short_day}:\n\n"
+        date_str = tomorrow_date.strftime('%d.%m')
+        short_day = tomorrow_day[:2]
+        
+        message = f"🟠 Расписание на завтра! {short_day} {date_str}:\n\n"
         for workout_type, time, description, session_id, booked_spots, total_spots in sessions:
             formatted_time = time.replace(':', '.')
             message += f"⏰ {formatted_time}\n"
@@ -404,26 +419,25 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Эта команда только для владелицы зала.")
         return
     
-    today = datetime.now()
-    days_map = {0: 'Понедельник', 1: 'Вторник', 2: 'Среда', 3: 'Четверг', 4: 'Пятница', 5: 'Суббота', 6: 'Воскресенье'}
-    today_day = days_map[today.weekday()]
+    today = datetime.now().date()
+    today_day = WEEKDAYS[today.weekday()]
     
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT workout_type, time, total_spots, booked_spots
+        SELECT workout_type, time, total_spots, booked_spots, date
         FROM schedule 
-        WHERE day = %s 
+        WHERE date = %s
         ORDER BY time
-    ''', (today_day,))
+    ''', (today,))
     sessions = cursor.fetchall()
     conn.close()
     
     if not sessions:
-        await update.message.reply_text(f"📅 На сегодня ({today_day}) тренировок нет.")
+        await update.message.reply_text(f"📅 На сегодня ({today.strftime('%d.%m')}) тренировок нет.")
         return
     
-    message = f"📊 **Статистика на сегодня ({today_day})**\n\n"
+    message = f"📊 **Статистика на сегодня ({today.strftime('%d.%m')})**\n\n"
     for row in sessions:
         available = row['total_spots'] - row['booked_spots']
         formatted_time = row['time'].replace(':', '.')
@@ -438,12 +452,7 @@ async def reset_spots(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Эта команда только для владелицы зала.")
         return
     
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute('UPDATE schedule SET booked_spots = 0')
-    conn.commit()
-    conn.close()
-    
+    reset_weekly_spots()
     await update.message.reply_text("✅ Все места на тренировки обнулены! Теперь везде 12 свободных мест.")
 
 # --- КОМАНДА ДЛЯ РУЧНОЙ РАССЫЛКИ (только для разработчика) ---
@@ -690,11 +699,12 @@ def get_workout_types_keyboard():
 def get_sessions_keyboard(workout_type):
     sessions = get_sessions_by_type(workout_type)
     keyboard = []
-    for day, time, total_spots, booked_spots, session_id in sessions:
+    for day, time, total_spots, booked_spots, session_id, date in sessions:
         available = total_spots - booked_spots
         status = "✅" if available > 0 else "❌"
-        short_day = DAYS_SHORT.get(day, day)
-        button_text = f"{status} {short_day} - {time.replace(':', '.')} ({available}/{total_spots})"
+        date_str = date.strftime('%d.%m')
+        short_day = day[:2]
+        button_text = f"{status} {short_day} {date_str} - {time.replace(':', '.')} ({available}/{total_spots})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"session_{session_id}")])
     keyboard.append([InlineKeyboardButton("« 🔙 К типам тренировок", callback_data="back_to_types")])
     keyboard.append([InlineKeyboardButton("« 🔙 В главное меню", callback_data="back_to_main")])
@@ -718,9 +728,10 @@ def get_my_bookings_keyboard(user_id):
     if not bookings:
         return None
     keyboard = []
-    for booking_id, workout_type, day, time in bookings:
-        short_day = DAYS_SHORT.get(day, day)
-        keyboard.append([InlineKeyboardButton(f"❌ {workout_type} - {short_day} {time.replace(':', '.')}", callback_data=f"cancel_{booking_id}")])
+    for booking_id, workout_type, day, time, date in bookings:
+        date_str = date.strftime('%d.%m')
+        short_day = day[:2]
+        keyboard.append([InlineKeyboardButton(f"❌ {workout_type} - {short_day} {date_str} {time.replace(':', '.')}", callback_data=f"cancel_{booking_id}")])
     keyboard.append([InlineKeyboardButton("« 🔙 Назад в главное меню", callback_data="back_to_main")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -781,9 +792,10 @@ async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TY
         booking_id = int(query.data[7:])
         success, result = cancel_booking(booking_id)
         if success:
-            workout_type, day, time = result
-            short_day = DAYS_SHORT.get(day, day)
-            await query.edit_message_text(f"✅ Запись отменена!\n\n🏋️ {workout_type}\n📅 {short_day}\n⏰ {time.replace(':', '.')}", reply_markup=get_back_to_main_keyboard())
+            workout_type, day, time, date = result
+            date_str = date.strftime('%d.%m')
+            short_day = day[:2]
+            await query.edit_message_text(f"✅ Запись отменена!\n\n🏋️ {workout_type}\n📅 {short_day} {date_str}\n⏰ {time.replace(':', '.')}", reply_markup=get_back_to_main_keyboard())
         else:
             await query.edit_message_text(f"❌ {result}", reply_markup=get_back_to_main_keyboard())
         return ConversationHandler.END
@@ -801,11 +813,12 @@ async def handle_inline_buttons(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['selected_session_id'] = session_id
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT workout_type, day, time FROM schedule WHERE id = %s', (session_id,))
+        cursor.execute('SELECT workout_type, day, time, date FROM schedule WHERE id = %s', (session_id,))
         row = cursor.fetchone()
         conn.close()
-        short_day = DAYS_SHORT.get(row['day'], row['day'])
-        await query.edit_message_text(f"Вы выбрали:\n🏋️ {row['workout_type']}\n📅 {short_day}\n⏰ {row['time'].replace(':', '.')}\n\nВведите ваше имя:", reply_markup=get_back_to_main_keyboard())
+        date_str = row['date'].strftime('%d.%m')
+        short_day = row['day'][:2]
+        await query.edit_message_text(f"Вы выбрали:\n🏋️ {row['workout_type']}\n📅 {short_day} {date_str}\n⏰ {row['time'].replace(':', '.')}\n\nВведите ваше имя:", reply_markup=get_back_to_main_keyboard())
         return ENTERING_NAME
     elif query.data == "faq_1":
         await query.edit_message_text(FAQ_ANSWER_1)
@@ -858,15 +871,20 @@ async def handle_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success, result = book_session(session_id, user_id, user_name, phone)
     
     if success:
-        workout_type, day, time, remaining = result
-        short_day = DAYS_SHORT.get(day, day)
+        workout_type, day, time, date, remaining = result
+        date_str = date.strftime('%d.%m')
+        short_day = day[:2]
         await update.message.reply_text(
-            f"✅ **Вы записаны!**\n\n🏋️ {workout_type}\n📅 {short_day}\n⏰ {time.replace(':', '.')}\n📊 Осталось мест: {remaining}\n\nЖдем вас! 💪",
+            f"✅ **Вы записаны!**\n\n🏋️ {workout_type}\n📅 {short_day} {date_str}\n⏰ {time.replace(':', '.')}\n📊 Осталось мест: {remaining}\n\nЖдем вас! 💪",
             reply_markup=get_main_keyboard(),
             parse_mode='Markdown'
         )
         try:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=f"📢 **НОВАЯ ЗАПИСЬ** 📢\n\n👤 {user_name}\n📞 {phone}\n🏋️ {workout_type}\n📆 {day}\n⏱️ {time.replace(':', '.')}", parse_mode='Markdown')
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=f"📢 **НОВАЯ ЗАПИСЬ** 📢\n\n👤 {user_name}\n📞 {phone}\n🏋️ {workout_type}\n📆 {short_day} {date_str}\n⏱️ {time.replace(':', '.')}",
+                parse_mode='Markdown'
+            )
         except Exception as e:
             logger.error(f"Ошибка отправки в канал: {e}")
     else:
@@ -884,7 +902,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     try:
         init_database()
-        populate_initial_data()
+        generate_schedule()  # Генерируем расписание на 4 недели
     except Exception as e:
         logger.error(f"Ошибка инициализации БД: {e}")
     
